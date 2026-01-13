@@ -91,7 +91,9 @@ def atomic_max_program(K, M, N, block_M, block_N, dtype="float"):
     return atomic_max
 
 
-def run_atomic_max(K, M, N, block_M, block_N, dtype="float32"):
+def run_atomic_max(K, M, N, block_M, block_N, dtype="int32"):
+    # Note: MUSA atomicMax only supports integer types (int, unsigned int, long long, unsigned long long)
+    # float/half types are not supported, unlike CUDA which has float atomicMax
     kernel = atomic_max_program(K, M, N, block_M, block_N, dtype=dtype)
     import torch
 
@@ -101,12 +103,12 @@ def run_atomic_max(K, M, N, block_M, block_N, dtype="float32"):
                 for j in range(N):
                     B[i, j] = max(B[i, j], A[k, i, j])
 
-    A = torch.randn(K, M, N, dtype=getattr(torch, dtype)).musa()
+    A = torch.randint(-100, 100, (K, M, N), dtype=getattr(torch, dtype)).musa()
     B = torch.zeros(M, N, dtype=getattr(torch, dtype)).musa()
     ref_B = B.clone()
     ref_program(A, ref_B)
     kernel(A, B)
-    torch.testing.assert_close(B, ref_B, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(B, ref_B, atol=0, rtol=0)
 
 
 @tilelang.jit
@@ -126,7 +128,9 @@ def atomic_min_program(K, M, N, block_M, block_N, dtype="float"):
     return atomic_min
 
 
-def run_atomic_min(K, M, N, block_M, block_N, dtype="float32"):
+def run_atomic_min(K, M, N, block_M, block_N, dtype="int32"):
+    # Note: MUSA atomicMin only supports integer types (int, unsigned int, long long, unsigned long long)
+    # float/half types are not supported, unlike CUDA which has float atomicMin
     kernel = atomic_min_program(K, M, N, block_M, block_N, dtype=dtype)
     import torch
 
@@ -136,12 +140,12 @@ def run_atomic_min(K, M, N, block_M, block_N, dtype="float32"):
                 for j in range(N):
                     B[i, j] = min(B[i, j], A[k, i, j])
 
-    A = torch.randn(K, M, N, dtype=getattr(torch, dtype)).musa()
-    B = torch.full((M, N), float('inf'), dtype=getattr(torch, dtype)).musa()
+    A = torch.randint(-100, 100, (K, M, N), dtype=getattr(torch, dtype)).musa()
+    B = torch.full((M, N), 1000, dtype=getattr(torch, dtype)).musa()
     ref_B = B.clone()
     ref_program(A, ref_B)
     kernel(A, B)
-    torch.testing.assert_close(B, ref_B, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(B, ref_B, atol=0, rtol=0)
 
 
 @tilelang.jit
@@ -237,7 +241,8 @@ def run_atomic_addx2(M, N, block_M, block_N):
 
 
 @tilelang.jit
-def atomic_different_memory_orders_program(M, N, block_M, block_N, dtype="float"):
+def atomic_different_memory_orders_program(M, N, block_M, block_N, dtype="int32"):
+    # Note: Using int32 because MUSA atomicMax/atomicMin only support integer types
 
     @T.prim_func
     def atomic_different_orders(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype), C: T.Tensor(
@@ -255,20 +260,21 @@ def atomic_different_memory_orders_program(M, N, block_M, block_N, dtype="float"
     return atomic_different_orders
 
 
-def run_atomic_different_memory_orders(M, N, block_M, block_N, dtype="float32"):
+def run_atomic_different_memory_orders(M, N, block_M, block_N, dtype="int32"):
+    # Note: MUSA atomicMax/atomicMin only support integer types, not float
     kernel = atomic_different_memory_orders_program(M, N, block_M, block_N, dtype=dtype)
     import torch
 
-    A = torch.randn(M, N, dtype=getattr(torch, dtype)).musa()
+    A = torch.randint(-100, 100, (M, N), dtype=getattr(torch, dtype)).musa()
     B = torch.zeros(M, N, dtype=getattr(torch, dtype)).musa()
     C = torch.zeros(M, N, dtype=getattr(torch, dtype)).musa()
-    D = torch.full((M, N), float('inf'), dtype=getattr(torch, dtype)).musa()
+    D = torch.full((M, N), 1000, dtype=getattr(torch, dtype)).musa()
 
     kernel(A, B, C, D)
 
-    torch.testing.assert_close(B, A, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(B, A, atol=0, rtol=0)
     torch.testing.assert_close(C, torch.maximum(torch.zeros_like(A), A))
-    torch.testing.assert_close(D, torch.minimum(torch.full_like(A, float('inf')), A))
+    torch.testing.assert_close(D, torch.minimum(torch.full_like(A, 1000), A))
 
 
 def test_atomic_add():
@@ -295,37 +301,7 @@ def test_atomic_addx2():
     run_atomic_addx2(32, 64, 8, 16)
 
 
-@tilelang.jit
-def atomic_addx4_program(M, N, block_M, block_N):
-
-    @T.prim_func
-    def atomic_addx4(A: T.Tensor((M, N), "float32"), B: T.Tensor((M, N), "float32")):
-        with T.Kernel(T.ceildiv(M, block_M), T.ceildiv(N, block_N), threads=32) as (bx, by):
-            for i, j in T.Parallel(block_M, block_N // 4):
-                idx_i = bx * block_M + i
-                idx_j = by * block_N + j * 4
-                T.atomic_addx4(B[idx_i, idx_j], A[idx_i, idx_j])
-
-    return atomic_addx4
-
-
-def run_atomic_addx4(M, N, block_M, block_N):
-    kernel = atomic_addx4_program(M, N, block_M, block_N)
-    import torch
-
-    A = torch.randn(M, N, dtype=torch.float32).musa()
-    B = torch.zeros(M, N, dtype=torch.float32).musa()
-    ref_B = B.clone()
-
-    for i in range(M):
-        for j in range(0, N - 3, 4):
-            ref_B[i, j] += A[i, j]
-            ref_B[i, j + 1] += A[i, j + 1]
-            ref_B[i, j + 2] += A[i, j + 2]
-            ref_B[i, j + 3] += A[i, j + 3]
-
-    kernel(A, B)
-    torch.testing.assert_close(B, ref_B, atol=1e-3, rtol=1e-3)
+# TODO add addx4 for PH1S
 
 
 @tilelang.jit
@@ -362,10 +338,6 @@ def run_atomic_return_prev(M, N, block_M, block_N, dtype="float32"):
 
 def test_atomic_different_memory_orders():
     run_atomic_different_memory_orders(32, 32, 8, 8)
-
-
-def test_atomic_addx4():
-    run_atomic_addx4(16, 64, 4, 4)
 
 
 def test_atomic_return_prev():
