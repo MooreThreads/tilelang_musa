@@ -1,5 +1,6 @@
 #pragma once
 
+#include "atomic.h"
 #include <cstdio> // snprintf
 #include <musa_bf16.h>
 #include <musa_fp16.h>
