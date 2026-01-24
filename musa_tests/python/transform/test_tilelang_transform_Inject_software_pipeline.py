@@ -6,12 +6,19 @@ import tilelang.testing
 
 def _check(original, transformed):
     func = original
-    mod = tvm.IRModule.from_expr(func.with_attr("global_symbol", "main"))
-    mod = tl.transform.InjectSoftwarePipeline()(mod)
-    mod = tl.transform.Simplify()(mod)
-    mod = tl.transform.LowerOpaqueBlock()(mod)
-    tvm.ir.assert_structural_equal(mod["main"], transformed.with_attr("global_symbol", "main"),
-                                   True)
+    musa_target = tvm.target.Target("musa -arch=mp_31", host="llvm")
+    mod = tvm.IRModule.from_expr(
+        func.with_attr("global_symbol", "main").with_attr("target", musa_target)
+    )
+    with tvm.target.Target(musa_target):
+        mod = tl.transform.InjectSoftwarePipeline()(mod)
+        mod = tl.transform.Simplify()(mod)
+        mod = tl.transform.LowerOpaqueBlock()(mod)
+    tvm.ir.assert_structural_equal(
+        mod["main"],
+        transformed.with_attr("global_symbol", "main").with_attr("target", musa_target),
+        True,
+    )
 
 
 def test_trival_pipeline():

@@ -463,7 +463,13 @@ private:
 
   // MTGPU 判断当前buffer空间是否需要对齐,并返回需要对齐的字节数
   int NeedAlignGemmABBuffer(const Buffer &buffer) {
-    if (!TargetIsPH1(Target::Current()) ||
+    Target target = Target::Current();
+    if (!target.defined()) {
+      LOG(WARNING) << "NeedAlignGemmABBuffer: Target::Current() is undefined; "
+                      "skip PH1 alignment checks.";
+      return 0;
+    }
+    if (!TargetIsPH1(target) ||
         !tvm::transform::PassContext::Current()->GetConfig<Bool>(
           kDisableTMALower, Bool(false)).value() ||
         (buffer->data->name_hint != "A_shared" && buffer->data->name_hint != "B_shared") ||
