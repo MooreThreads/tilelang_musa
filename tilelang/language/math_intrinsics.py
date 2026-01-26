@@ -129,7 +129,7 @@ def __exp10(x):
 
 
 def __exp(x):
-    """Calculate 2**x with fast math
+    """Take exponential of input x with fast math
 
     Parameters
     ----------

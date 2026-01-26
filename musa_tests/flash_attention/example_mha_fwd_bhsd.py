@@ -15,6 +15,7 @@ def get_configs():
     iter_params = dict(block_M=[256], block_N=[64], num_stages=[2], threads=[512])
     return [dict(zip(iter_params, values)) for values in itertools.product(*iter_params.values())]
 
+
 def make_k_perm_layout(K, block_N):
     l = block_N // 8
 
@@ -104,7 +105,7 @@ def flashattn(batch,
             scores_max[i] *= scale
 
         for i in T.Parallel(block_M):
-            scores_scale[i] = T.exp2(scores_max_prev[i]  - scores_max[i] )
+            scores_scale[i] = T.exp2(scores_max_prev[i] - scores_max[i])
 
         for i, j in T.Parallel(block_M, block_N):
             # Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
@@ -131,7 +132,12 @@ def flashattn(batch,
             V: T.Tensor(kv_shape, dtype),
             Output: T.Tensor(q_shape, dtype),
     ):
-        with T.Kernel(T.ceildiv(seq_q, block_M), heads, batch, threads=threads, producer_threads=producer_threads) as (bx, by, bz):
+        with T.Kernel(
+                T.ceildiv(seq_q, block_M),
+                heads,
+                batch,
+                threads=threads,
+                producer_threads=producer_threads) as (bx, by, bz):
             Q_shared = T.alloc_shared([block_M, dim], dtype)
             K_shared = T.alloc_shared([block_N, dim], dtype)
             P_shared = T.alloc_shared([block_M, block_N], dtype)
@@ -173,7 +179,7 @@ def flashattn(batch,
                 Rescale(acc_o, scores_scale)
                 MMA1(V, P_shared, V_shared, acc_o, k, by, bz)
             for i in T.Parallel(block_M):
-                scores_sum[i] =  1.0/logsum[i]
+                scores_sum[i] = 1.0 / logsum[i]
             for i, j in T.Parallel(block_M, dim):
                 acc_o[i, j] *= scores_sum[i]
 
@@ -230,7 +236,7 @@ def main(
         pass_configs = {
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: False,
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: False,
-            tilelang.PassConfigKey.TL_DISABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         }
 
@@ -255,8 +261,7 @@ def main(
                 "--num-dwords-of-load-in-mutation=64",
                 "-Od3",
                 "-O2",
-            ]
-        )
+            ])
 
         if verbose:
             print(kernel.get_kernel_source())
@@ -264,7 +269,6 @@ def main(
         q = torch.randn(batch, heads, seq_q, dim, device=DEVICE, dtype=getattr(torch, dtype))
         k = torch.randn(batch, heads, seq_kv, dim, device=DEVICE, dtype=getattr(torch, dtype))
         v = torch.randn(batch, heads, seq_kv, dim, device=DEVICE, dtype=getattr(torch, dtype))
-
 
         ref_program_processed = partial(ref_program, is_causal=is_causal)
 
@@ -295,6 +299,7 @@ def main(
 
 
 if __name__ == "__main__":
+    tilelang.disable_cache()
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch', type=int, default=4, help='batch size')
     parser.add_argument('--heads', type=int, default=8, help='heads')
