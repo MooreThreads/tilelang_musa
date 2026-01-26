@@ -16,7 +16,6 @@ from tilelang.contrib.nvcc import get_nvcc_compiler, get_target_arch, get_target
 from tilelang.contrib.mcc import get_mcc_compiler, get_musa_arch, get_musa_compute_version
 from tilelang.contrib.rocm import find_rocm_path, get_rocm_arch
 from tilelang.env import TILELANG_TEMPLATE_PATH, env
-from tilelang.utils.deprecated import deprecated_warning
 
 from .utils import is_cpu_target, is_cuda_target, is_hip_target, is_musa_target
 
@@ -81,22 +80,14 @@ class LibraryGenerator:
     def compile_lib(self, timeout: float = None):
         target = self.target
         verbose = self.verbose
+
+        enable_fast_math = self.pass_configs.get(PassConfigKey.TL_ENABLE_FAST_MATH, False)
+
         if is_cuda_target(target):
             from tilelang.env import CUTLASS_INCLUDE_DIR
             src = tempfile.NamedTemporaryFile(mode="w", suffix=".cu", delete=False)  # noqa: SIM115
             target_arch = get_target_arch(get_target_compute_version(target))
             libpath = src.name.replace(".cu", ".so")
-
-            if self.pass_configs.get(PassConfigKey.TL_DISABLE_FAST_MATH):
-                deprecated_warning(
-                    "TL_DISABLE_FAST_MATH",
-                    "TL_ENABLE_FAST_MATH",
-                    "0.1.7",
-                )
-                enable_fast_math = not self.pass_configs.get(PassConfigKey.TL_DISABLE_FAST_MATH,
-                                                             True)
-            else:
-                enable_fast_math = self.pass_configs.get(PassConfigKey.TL_ENABLE_FAST_MATH, False)
 
             ptxas_usage_level = self.pass_configs.get(PassConfigKey.TL_PTXAS_REGISTER_USAGE_LEVEL,
                                                       None)
@@ -145,6 +136,8 @@ class LibraryGenerator:
             ]
             if opt_level:
                 command += ["-Od3"]
+            if enable_fast_math:
+                command += ["-ffast-math"]
             command += [
                 "-mllvm",
                 "-mtgpu-alloc-shared-memory-from-zero=1",
