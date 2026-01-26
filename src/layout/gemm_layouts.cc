@@ -210,6 +210,17 @@ Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
   return block_layout->Repeat({warp_m / 4, warp_n}, true, false);
 }
 
+Fragment makeGemmFragmentCLinear(const int block_m, const int block_n,
+                                 const int block_size) {
+  IterVar i = make_itervar("i", block_m);
+  IterVar j = make_itervar("j", block_n);
+  IterVar rep = make_itervar("rep", 1);
+  PrimExpr linear = i->var * block_n + j->var;
+  PrimExpr forward_thread = FloorMod(linear, block_size);
+  PrimExpr index = FloorDiv(linear, block_size);
+  return Fragment({i, j}, {index}, forward_thread, rep);
+}
+
 Fragment makeGemmFragmentA(const int block_m, const int block_n,
                            const int block_k, const int warp_m,
                            const int warp_n, const int element_size,
