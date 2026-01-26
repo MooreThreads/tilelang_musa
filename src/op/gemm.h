@@ -23,7 +23,14 @@ enum class GemmWarpPolicyType : uint8_t {
 };
 
 // Target GEMM instruction
-enum class GemmInst : uint8_t { kMMA, kWGMMA, kTCGEN5MMA, kMFMA, kSQMMA };
+enum class GemmInst : uint8_t {
+  kMMA,
+  kFMA,
+  kWGMMA,
+  kTCGEN5MMA,
+  kMFMA,
+  kSQMMA
+};
 class GemmWarpPolicyNode : public Object {
 public:
   mutable int m_warp{0};
@@ -85,6 +92,7 @@ public:
 class GemmNode : public TileOperatorNode {
 public:
   bool CheckWGMMA() const;
+  bool AllowSQMMA(int block_size, Target target) const;
   tir::Buffer A, B, C;
   // pointer to the A, B, C
   PrimExpr Aptr, Bptr, Cptr;

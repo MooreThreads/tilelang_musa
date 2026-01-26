@@ -1544,10 +1544,20 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
         << " not found in buffer_remap";
     shared_tensor = T.buffer_remap.at(shared_tensor);
   }
+  bool musa_force_swizzle_none = false;
   if (!shared_layout.defined()) {
     desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
   } else if (StructuralEqual()(shared_layout, linear_layout)) {
     desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
+  } else if (TargetIsMusa(T.target) && shared_layout->InputDim() == 2) {
+    auto stride = as_const_int(shared_layout->InputShape()[0]);
+    auto continuous = as_const_int(shared_layout->InputShape()[1]);
+    if (stride != nullptr && continuous != nullptr &&
+        StructuralEqual()(shared_layout,
+                          makeGemmLayoutLinear(*stride, *continuous))) {
+      desc.swizzle = static_cast<int>(MU_SMEM_SWIZZLE_GRANULARITY_NONE);
+      musa_force_swizzle_none = true;
+    }
   } else if (!TargetIsMusa(T.target)) {
     ICHECK(shared_layout->InputDim() == 2) << "Cannot detect TMA layout.";
     auto stride = as_const_int(shared_layout->InputShape()[0]);
@@ -1594,7 +1604,7 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
     return -1;
   };
   // set swizzle granularity by elem_bytes and k_major
-  if (TargetIsMusa(T.target)) {
+  if (TargetIsMusa(T.target) && !musa_force_swizzle_none) {
     int elem_bytes = shared_tensor->dtype.bytes();
     int is_k_major = get_k_major(shared_tensor);
     if (elem_bytes == 1) {

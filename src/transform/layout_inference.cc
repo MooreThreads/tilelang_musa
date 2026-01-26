@@ -358,15 +358,17 @@ private:
         if (TargetIsPH1(target_)) {
           auto thread_bounds = thread_bounds_vec_.back();
           auto block_size = as_const_int(thread_bounds->extent);
-          auto warp_parts = gemm->policy->ComputeWarpPartition(
-              gemm->M, gemm->N, *block_size, target_, GemmInst::kSQMMA);
-          auto var = gemm->B->data;
-          auto warp_n_expr = IntImm(DataType::Int(32), warp_parts.second);
-          if (warp_n_map_.count(var)) {
-            ICHECK(StructuralEqual()(warp_n_map_[var], warp_n_expr))
-                << "warp_n mismatch for buffer " << gemm->B->name;
-          } else {
-            warp_n_map_.Set(var, warp_n_expr);
+          if (gemm->AllowSQMMA(*block_size, target_)) {
+            auto warp_parts = gemm->policy->ComputeWarpPartition(
+                gemm->M, gemm->N, *block_size, target_, GemmInst::kSQMMA);
+            auto var = gemm->B->data;
+            auto warp_n_expr = IntImm(DataType::Int(32), warp_parts.second);
+            if (warp_n_map_.count(var)) {
+              ICHECK(StructuralEqual()(warp_n_map_[var], warp_n_expr))
+                  << "warp_n mismatch for buffer " << gemm->B->name;
+            } else {
+              warp_n_map_.Set(var, warp_n_expr);
+            }
           }
         }
       }
