@@ -130,9 +130,30 @@ template <typename T> static PrimExpr DispatchMUSAShuffle(const PrimExpr &e) {
   return Call(call->dtype, T()(call->dtype, Downcast<Op>(call->op)), musa_args);
 }
 
+static PrimExpr DispatchMUSAExp2(const PrimExpr &e) {
+  const CallNode *call = e.as<CallNode>();
+  ICHECK(call != nullptr);
+  ICHECK_EQ(call->args.size(), 1U);
+  DataType t = call->dtype;
+  if (t.is_float() && t.bits() == 32) {
+    if (t.lanes() == 2) {
+      return Call(t, builtin::call_pure_extern(),
+                  {StringImm("tl::vec_exp2_f2"), call->args[0]});
+    }
+    if (t.lanes() == 4) {
+      return Call(t, builtin::call_pure_extern(),
+                  {StringImm("tl::vec_exp2_f4"), call->args[0]});
+    }
+  }
+  return DispatchPureExtern<MUSAMath>(e);
+}
+
 TVM_REGISTER_OP("tir.rsqrt")
     .set_attr<FLowerIntrinsic>("musa.FLowerIntrinsic",
                                DispatchPureExtern<MUSAMath>);
+
+TVM_REGISTER_OP("tir.exp2")
+    .set_attr<FLowerIntrinsic>("musa.FLowerIntrinsic", DispatchMUSAExp2, 11);
 
 } // namespace intrin
 } // namespace codegen
