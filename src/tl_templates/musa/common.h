@@ -394,4 +394,16 @@ TL_DEVICE float4 vec_sum_f4(float4 a, float4 b) {
   return out;
 }
 
+TL_DEVICE float2 vec_exp2_f2(float2 a) {
+  float2 out;
+  mute::fast_exp2(out, a);
+  return out;
+}
+
+TL_DEVICE float4 vec_exp2_f4(float4 a) {
+  float4 out;
+  mute::fast_exp2(out, a);
+  return out;
+}
+
 } // namespace tl

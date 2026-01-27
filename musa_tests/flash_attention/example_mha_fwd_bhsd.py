@@ -238,6 +238,7 @@ def main(
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: False,
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+            tilelang.PassConfigKey.TL_ENABLE_MUSA_BURST: True,
         }
 
         kernel = tilelang.compile(

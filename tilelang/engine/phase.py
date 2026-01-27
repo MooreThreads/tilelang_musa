@@ -6,6 +6,7 @@ from tilelang.transform import PassContext
 from tilelang.contrib import nvcc
 from tilelang.contrib import mcc
 
+
 def have_tma(target):
     # avoid circular import
     from tilelang.jit.adapter.utils import is_cuda_target, is_musa_target
@@ -57,6 +58,13 @@ def allow_global_thread_synchronization(pass_ctx: PassContext | None = None) -> 
         pass_ctx = tilelang.transform.get_pass_context()
     enable_global_thread_sync = pass_ctx.config.get("tir.detect_global_barrier", False)
     return enable_global_thread_sync
+
+
+def allow_lower_musa_burst(target: Target, pass_ctx: PassContext | None = None) -> bool:
+    if pass_ctx is None:
+        pass_ctx = tilelang.transform.get_pass_context()
+    return mcc.is_ph1(target) and pass_ctx.config.get(tilelang.PassConfigKey.TL_ENABLE_MUSA_BURST,
+                                                      False)
 
 
 def should_enable_aggressive_merge(pass_ctx: PassContext | None = None,
@@ -132,6 +140,9 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # TODO(lei): return to tir pass when kSymbolicBound simplification
     # is merged into tvm.
     mod = tilelang.transform.Simplify()(mod)
+    # Late vectorization planning for MUSA SIMD ops after index simplification.
+    if allow_lower_musa_burst(target):
+        mod = tilelang.transform.LateVectorizePlanner()(mod)
     # Try to vectorize loop with dynamic shape
     mod = tilelang.transform.LoopVectorizeDynamic()(mod)
     return mod
