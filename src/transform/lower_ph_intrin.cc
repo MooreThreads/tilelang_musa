@@ -57,26 +57,35 @@ public:
   }
 
   Stmt VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == tl::attr::kMusaReduceBarrierInit) {
+      extra_init_calls_.push_back(StmtExprMutator::VisitStmt(op->body));
+      return Stmt();
+    }
     // Insert the prefetch TMA descriptor statement TO the beginning of the
     // kernel
     if (op->attr_key == tir::attr::thread_extent) {
       IterVar iv = Downcast<IterVar>(op->node);
       if (iv->thread_tag == "threadIdx.x") {
         auto body = StmtExprMutator::VisitStmt(op->body);
-        if (prefetch_calls_.empty() && init_mbarrier_calls_.empty()) {
+        if (prefetch_calls_.empty() && init_mbarrier_calls_.empty() &&
+            extra_init_calls_.empty()) {
           return AttrStmt(op->node, op->attr_key, op->value, body);
         } else {
-          Array<Stmt> stmt_seq;
+          bool has_init =
+              !init_mbarrier_calls_.empty() || !extra_init_calls_.empty();
+          Array<Stmt> prologue;
           if (!init_mbarrier_calls_.empty()) {
             auto alloc_mbarrier =
                 Evaluate(Call(DataType::Handle(), builtin::create_barriers(),
                               {static_cast<int>(init_mbarrier_calls_.size())}));
-            stmt_seq.push_back(alloc_mbarrier);
+            prologue.push_back(alloc_mbarrier);
           }
 
           auto stmts = prefetch_calls_;
           stmts.insert(stmts.end(), init_mbarrier_calls_.begin(),
                        init_mbarrier_calls_.end());
+          stmts.insert(stmts.end(), extra_init_calls_.begin(),
+                       extra_init_calls_.end());
           PrimExpr condition;
           if (!disable_shuffle_elect_) {
             condition = Call(DataType::Bool(), tl_shuffle_elect(), {0});
@@ -85,8 +94,8 @@ public:
           }
           auto stmt_ = IfThenElse(condition,
                                   stmts.size() > 1 ? SeqStmt(stmts) : stmts[0]);
-          stmt_seq.push_back(stmt_);
-          if (!init_mbarrier_calls_.empty()) {
+          prologue.push_back(stmt_);
+          if (has_init) {
             // Note from FlashAttention:
             // Helps with visibility of barrier init operations across warps /
             // cta / cluster Available as a separate function so as to batch
@@ -102,13 +111,14 @@ public:
             Stmt mem_sync =
                 Evaluate(Call(DataType::Handle(), builtin::tvm_storage_sync(),
                               {StringImm("shared")}));
-            stmt_seq.push_back(mem_sync);
+            prologue.push_back(mem_sync);
           }
-          stmt_seq.push_back(body);
+          body = InsertPrologue(std::move(body), prologue);
 
           prefetch_calls_.clear();
           init_mbarrier_calls_.clear();
-          return AttrStmt(op->node, op->attr_key, op->value, SeqStmt(stmt_seq));
+          extra_init_calls_.clear();
+          return AttrStmt(op->node, op->attr_key, op->value, body);
         }
       }
     }
@@ -148,8 +158,22 @@ public:
   }
 
 private:
+  Stmt InsertPrologue(Stmt body, const Array<Stmt> &prologue) {
+    if (prologue.empty()) {
+      return body;
+    }
+    if (const auto *let = body.as<LetStmtNode>()) {
+      Stmt inner = InsertPrologue(let->body, prologue);
+      return LetStmt(let->var, let->value, inner);
+    }
+    Array<Stmt> seq = prologue;
+    seq.push_back(body);
+    return SeqStmt(seq);
+  }
+
   Array<Stmt> prefetch_calls_;
   Array<Stmt> init_mbarrier_calls_;
+  Array<Stmt> extra_init_calls_;
   std::unordered_map<Call, Var, StructuralHash, ExprDeepEqual> desc_map_;
   LowerPHIntrin(bool disable_shuffle_elect)
       : disable_shuffle_elect_(disable_shuffle_elect) {}

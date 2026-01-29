@@ -451,6 +451,12 @@ def LowerSharedBarrier():
     return _ffi_api.LowerSharedBarrier()  # type: ignore
 
 
+def LowerReduceBarrier():
+    """LowerReduceBarrier
+    """
+    return _ffi_api.LowerReduceBarrier()  # type: ignore
+
+
 def StorageRewrite():
     """StorageRewrite
 
