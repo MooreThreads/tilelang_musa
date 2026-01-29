@@ -704,6 +704,17 @@ private:
       }
       return workspace.access_ptr(2); // write
     };
+    AddBarrierCallback barrier_callback = [this](int64_t arrive_count) {
+      auto count = IntImm(DataType::Int(32), static_cast<int>(arrive_count));
+      auto barrier = decl_buffer({count}, DataType::UInt(64),
+                                 "reduce_sync_barrier", "shared.reduce_bar");
+      if (!workspace_stack_.empty()) {
+        workspace_stack_.back().push_back(barrier);
+      } else {
+        workspace_stack_.emplace_back(Array<Buffer>{barrier});
+      }
+      return barrier;
+    };
 
     Range thread_bounds;
 
@@ -721,8 +732,8 @@ private:
 
     auto lowered = tile_op->Lower(
         LowerArgs{target_, thread_bounds, thread_var_->var, callback,
-                  layout_map_, buffer_remap_, buffer_var_gemm_,
-                  buffer_var_k_major_, buffer_var_warp_n_},
+                  barrier_callback, layout_map_, buffer_remap_,
+                  buffer_var_gemm_, buffer_var_k_major_, buffer_var_warp_n_},
         analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }

@@ -64,6 +64,9 @@ class PassConfigKey(str, Enum):
     TL_ENABLE_MUSA_BURST = "tl.enable_musa_burst"
     """Enable MUSA burst SIMD vectorization when True. Default: False"""
 
+    TL_ENABLE_REDUCE_BURST = "tl.enable_reduce_burst"
+    """Enable MUSA reduce SIMD optimizations when True. Default: False"""
+
     TL_DISABLE_THREAD_STORAGE_SYNC = "tl.disable_thread_storage_sync"
     """Disable thread storage synchronization pass. When enabled, disables the
     automatic insertion of thread synchronization barriers (e.g., __syncthreads())

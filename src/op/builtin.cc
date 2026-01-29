@@ -35,6 +35,7 @@ TVM_REGISTER_PASS_CONFIG_OPTION(kDisableWGMMA, Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION(kDisableSQMMA, Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION(kDisableShuffleElect, Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION(kEnableMusaBurst, Bool);
+TVM_REGISTER_PASS_CONFIG_OPTION(kEnableReduceBurst, Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION(kStorageRewriteDetectInplace, Bool);
 
 DataType cuTensorMapType() { return DataType::UInt(8, 128); }
