@@ -125,11 +125,8 @@ TL_DEVICE void gemm_ss(A_type *pA, B_type *pB, C_type *accum) {
                                              A_type, B_type, C_type>;
     MMA::body(pA, pB, accum);
   } else {
-    // using MMA =
-    //     mute::tl_mma::GemmTensorOp<M, N, K, num_warp_m, num_warp_n, trans_A,
-    //                                trans_B, clear_accum, lda, ldb, offset_a,
-    //                                offset_b, A_type, B_type, C_type>;
-    // MMA::body(pA, pB, accum);
+    static_assert(use_sqmma,
+                  "PH1 WMMA lowering is expected");
   }
 }
 
