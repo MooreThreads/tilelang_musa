@@ -47,6 +47,7 @@ struct AllReduce {
                 threads == 128 or threads == 64 or threads == 32 or
                 threads == 16 or threads == 8 or threads == 4 or threads == 2);
   static_assert(threads % scale == 0);
+
   template <typename T> static TL_DEVICE T run(T x, T *red_buf = nullptr) {
     constexpr int offset = threads / 2;
     if constexpr (offset >= 32) {
@@ -64,10 +65,35 @@ struct AllReduce {
           x, red_buf);
     }
   }
+};
 
-  // todo: 使用 bar.sync 替代 __syncthreads, 参考 cuda run_hopper
+template <class Reducer, int threads, int scale, int thread_offset = 0,
+          int all_threads = threads>
+struct AllReduceWS {
+  static_assert(threads == 1024 or threads == 512 or threads == 256 or
+                threads == 128 or threads == 64 or threads == 32 or
+                threads == 16 or threads == 8 or threads == 4 or threads == 2);
+  static_assert(threads % scale == 0);
+
   template <typename T>
-  static TL_DEVICE T run_ph(T x, T *red_buf = nullptr) {
+  static TL_DEVICE T run(T x, int barrier_id, T *red_buf = nullptr) {
+    constexpr int offset = threads / 2;
+    if constexpr (offset >= 32) {
+      auto phase = __musa_async_arrive(barrier_id);
+      __musa_async_wait(barrier_id, phase);
+      red_buf[threadIdx.x - thread_offset] = x;
+      phase = __musa_async_arrive(barrier_id);
+      __musa_async_wait(barrier_id, phase);
+      x = Reducer()(x, red_buf[(threadIdx.x - thread_offset) ^ offset]);
+    } else {
+      x = Reducer()(x, tl::shfl_xor_sync(uint32_t(-1), x, offset));
+    }
+    if constexpr (offset == scale) {
+      return x;
+    } else {
+      return AllReduceWS<Reducer, offset, scale, thread_offset,
+                         all_threads>::run(x, barrier_id, red_buf);
+    }
   }
 };
 

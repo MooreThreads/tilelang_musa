@@ -16,7 +16,9 @@
 #include "../op/parallel.h"
 #include "../target/utils.h"
 #include "../transform/loop_partition.h"
+#include "builtin.h"
 #include "tir/transforms/ir_utils.h"
+#include <tvm/tir/transform.h>
 
 namespace tvm {
 namespace tl {
@@ -413,11 +415,19 @@ Stmt ReduceOpNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       src_var_compressed.push_back(var);
     }
 
+    tvm::transform::PassContext pass_ctx =
+        tvm::transform::PassContext::Current();
+    bool enable_reduce_burst =
+        pass_ctx->GetConfig<Bool>(kEnableReduceBurst, Bool(false)).value();
+
     // Use MUSA SIMD reduce when reduction is contiguous float32 with extent
-    // % 8.
-    MusaInThreadSimdPlan simd_plan =
-        PlanMusaInThreadSimd(T.target, this->type, src_buffer, dst_buffer,
-                             src_indice_compressed, src_var_compressed);
+    // % 8 and reduce burst is enabled.
+    MusaInThreadSimdPlan simd_plan;
+    if (enable_reduce_burst) {
+      simd_plan =
+          PlanMusaInThreadSimd(T.target, this->type, src_buffer, dst_buffer,
+                               src_indice_compressed, src_var_compressed);
+    }
 
     Stmt reduce_local;
     if (simd_plan.enabled) {
@@ -488,9 +498,12 @@ Stmt ReduceOpNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     auto iter_sum =
         arith::NormalizeToIterSum(src_thread, ToVMap(src_vars), analyzer);
 
-    MusaInterThreadSimdPlan simd_allreduce_plan =
-        PlanMusaInterThreadSimd(T.target, this->type, src_buffer, dst_buffer,
-                                dst_indices, dst_vars, dst_layout);
+    MusaInterThreadSimdPlan simd_allreduce_plan;
+    if (enable_reduce_burst) {
+      simd_allreduce_plan =
+          PlanMusaInterThreadSimd(T.target, this->type, src_buffer, dst_buffer,
+                                  dst_indices, dst_vars, dst_layout);
+    }
 
     bool simd_allreduce_emitted = false;
     for (const auto &iter_split : iter_sum->args) {
@@ -577,11 +590,19 @@ Stmt ReduceOpNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
         std::stringstream ss;
         auto thread_offset = T.thread_bounds->min;
+        bool use_musa_sync = TargetIsPH1(T.target);
+        Buffer reduce_sync_barrier;
         if (TargetIsHopper(T.target) || TargetIsSm100(T.target)) {
           auto all_threads = T.thread_bounds->extent;
           ss << "tl::AllReduce<" << this->MakeCodegenReducer() << ", "
              << reducing_threads << ", " << (*scale) << ", " << thread_offset
              << ", " << all_threads << ">::run_hopper";
+        } else if (use_musa_sync) {
+          auto all_threads = T.thread_bounds->extent;
+          reduce_sync_barrier = T.AddBarrier(*as_const_int(all_threads));
+          ss << "tl::AllReduceWS<" << this->MakeCodegenReducer() << ", "
+             << reducing_threads << ", " << (*scale) << ", " << thread_offset
+             << ", " << all_threads << ">::run";
         } else {
           ss << "tl::AllReduce<" << this->MakeCodegenReducer() << ", "
              << reducing_threads << ", " << (*scale) << ", " << thread_offset
@@ -589,6 +610,11 @@ Stmt ReduceOpNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         }
         Array<PrimExpr> thread_reduce_args = {
             StringImm(ss.str()), BufferLoad(clear_buffer, dst_indices)};
+        if (use_musa_sync) {
+          PrimExpr barrier_id =
+              BufferLoad(reduce_sync_barrier, {IntImm(DataType::Int(32), 0)});
+          thread_reduce_args.push_back(barrier_id);
+        }
         if (reducing_threads >= 32) {
           PrimExpr workspace = T.AddWorkspace(
               *as_const_int(T.thread_bounds->extent), clear_buffer->dtype);

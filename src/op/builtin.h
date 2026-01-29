@@ -31,6 +31,8 @@ static constexpr const char *kWarpSpecializationProducerThreads =
     "tl.warp_specialization_producer_threads";
 static constexpr const char *kLocalVarInit = "tl.local_var_init";
 static constexpr const char *kForceAsyncCopy = "tl.force_async_copy";
+static constexpr const char *kMusaReduceBarrierInit =
+    "tl.musa_reduce_barrier_init";
 } // namespace attr
 
 static constexpr const char *kDebugMergeSharedMemoryAllocations =
@@ -54,6 +56,7 @@ static constexpr const char *kDisableWGMMA = "tl.disable_wgmma";
 static constexpr const char *kDisableSQMMA = "tl.disable_sqmma";
 static constexpr const char *kDisableShuffleElect = "tl.disable_shuffle_elect";
 static constexpr const char *kEnableMusaBurst = "tl.enable_musa_burst";
+static constexpr const char *kEnableReduceBurst = "tl.enable_reduce_burst";
 static constexpr const char *kStorageRewriteDetectInplace =
     "tl.storage_rewrite_detect_inplace";
 /*!

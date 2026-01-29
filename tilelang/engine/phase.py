@@ -161,6 +161,8 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         mod = tilelang.transform.IfStmtBinding()(mod)
         mod = tilelang.transform.MultiVersionBuffer()(mod)
         mod = tilelang.transform.WarpSpecialized()(mod)
+        if is_musa_target(target):
+            mod = tilelang.transform.LowerReduceBarrier()(mod)
         mod = tilelang.transform.InjectTmaBarrier()(mod)
         # if tma is not enabled, we can also do pipeline planning
         # to get better performance with async copy
@@ -174,6 +176,8 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
             mod = tilelang.transform.RewriteWgmmaSync()(mod)
     else:
         mod = tilelang.transform.IfStmtBinding()(mod)
+        if is_musa_target(target):
+            mod = tilelang.transform.LowerReduceBarrier()(mod)
         mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
         mod = tilelang.transform.PipelinePlanning()(mod)
         mod = tilelang.transform.InjectSoftwarePipeline()(mod)

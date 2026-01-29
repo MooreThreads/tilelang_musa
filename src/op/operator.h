@@ -23,6 +23,7 @@ namespace tl {
 using namespace tir;
 
 using AddWorkspaceCallback = std::function<PrimExpr(int, DataType)>;
+using AddBarrierCallback = std::function<Buffer(int64_t)>;
 using LayoutMap = Map<Buffer, Layout>;
 using BufferMap = Map<Var, Buffer>;
 
@@ -37,6 +38,7 @@ struct LowerArgs {
   Range thread_bounds;
   Var thread_var;
   AddWorkspaceCallback AddWorkspace;
+  AddBarrierCallback AddBarrier;
   LayoutMap layout_map;
   Map<Buffer, Buffer> buffer_remap;
   Array<Var> buffer_var_gemm;
