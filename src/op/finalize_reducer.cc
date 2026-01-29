@@ -95,16 +95,28 @@ Stmt FinalizeReducerOpNode::Lower(const LowerArgs &T,
   int reducing_threads = extent;
   std::stringstream ss;
   auto thread_offset = T.thread_bounds->min;
+  bool use_musa_sync = TargetIsPH1(T.target) && reducing_threads >= 64;
+  Buffer reduce_sync_barrier;
   if (TargetIsHopper(T.target) || TargetIsSm100(T.target)) {
     auto all_threads = T.thread_bounds->extent;
     ss << "tl::AllReduce<" << op_str << ", " << reducing_threads << ", " << 1
        << ", " << thread_offset << ", " << all_threads << ">::run_hopper";
+  } else if (use_musa_sync) {
+    auto all_threads = T.thread_bounds->extent;
+    reduce_sync_barrier = T.AddBarrier(*as_const_int(all_threads));
+    ss << "tl::AllReduceWS<" << op_str << ", " << reducing_threads << ", " << 1
+       << ", " << thread_offset << ", " << all_threads << ">::run";
   } else {
     ss << "tl::AllReduce<" << op_str << ", " << reducing_threads << ", " << 1
        << ", " << thread_offset << ">::run";
   }
   Array<PrimExpr> thread_reduce_args = {StringImm(ss.str()),
                                         BufferLoad(buffer, indices_0)};
+  if (use_musa_sync) {
+    PrimExpr barrier_id =
+        BufferLoad(reduce_sync_barrier, {IntImm(DataType::Int(32), 0)});
+    thread_reduce_args.push_back(barrier_id);
+  }
   if (reducing_threads >= 32) {
     PrimExpr workspace =
         T.AddWorkspace(*as_const_int(T.thread_bounds->extent), buffer->dtype);
