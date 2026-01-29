@@ -1,37 +1,28 @@
 # Tilelang介绍
 
-    TileLang（[https://tilelang.com/index.html](https://tilelang.com/index.html)）是一种简洁的基于tile的领域特定语言，旨在增加高性能GPU/CPU算子的开发效率，相关算子包括GEMM，Dequant GEMM, FlashAttention, LinearAttention等。TileLang采用python语法，并且基于TVM构建底层编译器，使得开发人员可以轻松实现一流性能所需要的底层优化，从而更加专注于算子开发效率。
+TileLang([https://tilelang.com/index.html](https://tilelang.com/index.html)) 是一种简洁的基于tile的领域特定语言，旨在增加高性能GPU/CPU算子的开发效率，相关算子包括GEMM，Dequant GEMM, FlashAttention, LinearAttention等。TileLang采用python语法，并且基于TVM构建底层编译器，使得开发人员可以轻松实现一流性能所需要的底层优化，从而更加专注于算子开发效率。
 
-    TileLang-MUSA 是TileLang在摩尔线程（Moore Threads）MUSA 架构上的深度适配，包含 DSL 编程语言、JIT 编译器、运行时系统及预优化算子库。除了深度兼容TileLang本身的API和语言特性之外，TileLang-MUSA还推出了MUSA扩展，方便开发者更好的写出高性能MUSA算子。
+TileLang-MUSA([https://tilelang.com/index.html](https://github.com/MooreThreads/tilelang_musa)) 是TileLang在摩尔线程（Moore Threads）MUSA 架构上的深度适配，包含 DSL 编程语言、JIT 编译器、运行时系统及预优化算子库。除了深度兼容TileLang本身的API和语言特性之外，TileLang-MUSA还推出了MUSA扩展，方便开发者更好的写出高性能MUSA算子。
 
-    Tilelang MUSA 通过 分层编程模型 + 硬件感知编译 + 自动调优 三位一体方案实现Tilelang在MUSA架构的深度适配：
+Tilelang MUSA 通过 分层编程模型 + 硬件感知编译 + 自动调优 三位一体方案实现Tilelang在MUSA架构的深度适配：
 
 ![alt text](images/tilelang.png)
 
 三层编程接口：
 
-*   入门级：无需了解硬件，用高层张量表达式编写算法；
+- 入门级：无需了解硬件，用高层张量表达式编写算法。
+- 开发者级：使用预定义 Tile Library（如 `T.gemm`, `T.copy`）快速构建 kernel。
+- 专家级：直接操作线程原语（warp、barrier、shared memory），进行极致优化。
 
+硬件抽象与自动映射：
 
-开发者级：使用预定义 Tile Library（如 `tl.gemm`, `tl.copy`）快速构建 kernel；
+- 根据不同的架构 `T.gemm` 自动转换为 SQMMA 指令或 WMMA 指令，
+- `T.copy` 自动转换为 TME（Tensor Memory Extension） 指令或 global↔shared 专用搬运指令，
+- `mbarrier` 原语在平湖上编译为 ASYNC barrier，支持异步流水。
 
-专家级：直接操作线程原语（warp、barrier、shared memory），进行极致优化。
-
-*   硬件抽象与自动映射：
-
-
-在平湖架构上，`tl.copy` 自动映射为 TME（Tensor Memory Extension） 指令；
-
-在曲院架构上，映射为 global↔shared 专用搬运指令；
-
-`mbarrier` 原语在平湖上编译为 ASYNC barrier，支持异步流水。
-
-*   端到端编译链：
-
-
-源码 → Tile IR → MUSA ASM → 可执行 kernel；
-
-复用现有 MUSA 工具链，兼容 `nvrtc` 式 JIT 流程。
+端到端编译链：
+- 源码 → Tile IR → MUSA ASM → 可执行 kernel;
+- 复用现有 MUSA 工具链，兼容 `nvrtc` 式 JIT 流程。
 
 ## 核心特点
 
@@ -115,11 +106,10 @@
 
 ## 环境准备
 
-*   支持 MUSA 架构的 GPU（如 MTTS series）
-
-*   安装 MUSA SDK 4.3.0 及以上版本
-
-*   Python ≥ 3.8
+- 支持 MUSA 架构的 GPU（如 MTTS series）
+- 安装 MUSA SDK 4.3.0 及以上版本
+- Python ≥ 3.8
+- 运行时需要当前 Python 环境有 torch_musa
 
 
 ## 安装
@@ -135,14 +125,14 @@ python -c "import tilelang; print(tilelang.__version__)"
 
 ### 从源码安装 
 
+和 Tilelang 官方安装方式一致
+
 ```cpp
 git clone https://github.com/MooreThreads/tilelang_musa.git
 cd tilelang
 conda create -n tilelang-main python=3.10
 conda activate tilelang-main
 pip install -r ./requirements-dev.txt
-pip install -r ./requirements-lint.txt
-pre-commit install
 export USE_MUSA=1
 pip install -e . -v --no-build-isolation
 ```
@@ -151,87 +141,57 @@ pip install -e . -v --no-build-isolation
 
 一两个case上手tilelang
 
-### 示例 1：使用预置算子（开发者级）
+### 示例 1：Elementwise Add
 
-```python
-import tilelang as tl
+```py
+import tilelang
+import tilelang.language as T
+import torch
 
-# 创建 FP16 张量（自动分配 MUSA 显存）
-q = tl.randn((batch, n_heads, seq_len, head_dim), dtype=tl.float16)
-k = tl.randn_like(q)
-v = tl.randn_like(q)
+# 禁用缓存, 调试查看 IR 需要使用
+tilelang.disable_cache()
 
-# 调用高性能 FlashAttention
-attn_out = tl.flash_attention(q, k, v, is_causal=True)
+def elementwise_add(N, num_per_thread=8, threads=256, dtype="float32"):
+    @T.prim_func
+    def main(A: T.Tensor((N), dtype), B: T.Tensor((N), dtype), C: T.Tensor((N), dtype)):
+        # 设置 grid size 和 block thread number
+        with T.Kernel(T.ceildiv(N, threads * num_per_thread), threads=threads) as (b_x):
+            # thread block 级别执行代码
+            for i, j in T.Parallel(threads, num_per_thread):
+                offsets = (b_x * threads + i) * num_per_thread
+                C[offsets + j] = A[offsets + j] + B[offsets + j]
+    return main
+
+def ref_program(x, y):
+    return x + y
+
+N = 4096
+# 获取 PrimFunc 并编译
+program = elementwise_add(N)
+kernel = tilelang.compile(program, out_idx=-1, execution_backend="cython", verbose=True)
+# 打印 MUSA C 代码
+print(kernel.get_kernel_source())
+
+# 运行 Tilelang Kernel 并和 torch 比对结果
+a = torch.randn(N, dtype=torch.float32, device="musa")
+b = torch.randn(N, dtype=torch.float32, device="musa")
+
+c = kernel(a, b)
+torch.testing.assert_close(c, ref_program(a, b), rtol=1e-2, atol=1e-2)
 ```
 
-### 示例 2：自定义融合 kernel（专家级）
 
-```python
-@tl.jit
-def fused_moe_router(
-    x_ptr, gate_ptr, out_ptr,
-    M, N, E,  # M: tokens, N: hidden, E: experts
-    stride_xm, stride_xn,
-    stride_gm, stride_ge,
-    stride_om, stride_on
-):
-    pid = tl.program_id(0)
-    # Load token and gate logits
-    x = tl.load(x_ptr + pid * stride_xm + tl.arange(0, N))
-    gate_logits = tl.load(gate_ptr + pid * stride_gm + tl.arange(0, E))
 
-    # Top-1 routing (simplified)
-    expert_idx = tl.argmax(gate_logits)
-
-    # Dispatch to expert (fused with GEMM in practice)
-    tl.store(out_ptr + pid * stride_om + tl.arange(0, N), x)
-```
-
-# Tilelang 语法与源语
+# Tilelang DSL 语法与 API
 
 ## 语法
 
-关于具体语法信息，可参考TileLang官网 [https://tilelang.com/programming\_guides/language\_basics.html](https://tilelang.com/programming_guides/language_basics.html)
+关于具体语法信息，可参考TileLang官网 [https://tilelang.com/programming\_guides/language\_basics.html](https://tilelang.com/programming_guides/language_basics.html)，Tilelang_MUSA 已支持绝大多数 Tilelang 语法
 
-### 张量创建与设备管理
+Tilelang 指令
+[https://tilelang.com/programming\_guides/instructions.html](https://tilelang.com/programming_guides/instructions.html)
+[https://tilelang.com/autoapi/tilelang/index.html](https://tilelang.com/autoapi/tilelang/index.html)
 
-```python
-x = tl.empty((1024, 512), dtype=tl.float16)  # 分配 MUSA 显存
-device = tl.current_device()                 # 获取当前设备
-```
-
-### 调用预置高性能算子
-
-```python
-# GEMM
-c = tl.gemm(a, b, trans_a=False, trans_b=True)
-
-# 归约
-mean_val = tl.mean(x, axis=-1)
-
-# 融合激活
-y = tl.bias_gelu(x, bias)
-```
-
-### kernel launch
-
-```python
-grid = lambda meta: (triton.cdiv(M, meta['BLOCK_M']), triton.cdiv(N, meta['BLOCK_N']))
-my_kernel[grid](a, b, c, M, N, K)
-```
-
-### kernel 定义
-
-```cpp
-@T.prim_func
-def add_kernel(
-    A: T.Tensor((N,), dtype),    # dtype could be 'float32' | T.float32 | torch.float32
-    B: T.Tensor((N,), dtype),
-    C: T.Tensor((N,), dtype),
-):
-    ...  # kernel body
-```
 
 ### 类型系统
 
@@ -255,68 +215,35 @@ for k in T.Pipelined(T.ceildiv(K, BK), num_stages=3):
     ...
 ```
 
+## API
+
 ### 性能分析：
 
 [https://tilelang.com/autoapi/tilelang/profiler/index.html#module-tilelang.profiler](https://tilelang.com/autoapi/tilelang/profiler/index.html#module-tilelang.profiler)
 
 ```python
-kernel = tl.flash_attention(q, k, v)
-profiler = kernel.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Normal)
-latency = profiler.do_bench()
-print(f"Latency: {latency} ms")
+kernel = tilelang.compile(
+    program,
+    out_idx=-1,
+    target=TARGET,
+    execution_backend="cython",
+)
+profiler = kernel.get_profiler()
+latency_ms = profiler.do_bench(
+    n_warmup=n_warmup,
+    n_repeat=n_repeat,
+    backend=backend,
+    quantiles=quantiles,
+    return_mode=return_mode,
+)
+print(f"Latency: {latency_ms} ms")
 ```
 
 ### 自动调优：
 
 [https://tilelang.com/autoapi/tilelang/autotuner/tuner/index.html#module-tilelang.autotuner.tuner](https://tilelang.com/autoapi/tilelang/autotuner/tuner/index.html#module-tilelang.autotuner.tuner)
 
-```python
-def get_block_template_configs():
-    iter_params = dict(
-        block_M=[2, 4, 8, 32, 64, 128],
-        block_N=[2, 4, 8, 32, 64, 128],
-        num_stages=[0, 1, 2, 3, 4],
-        threads=[32, 64, 128, 256])
-    return [dict(zip(iter_params, values)) for values in itertools.product(*iter_params.values())]
-
-
-@tl.autotune(
-    configs=get_block_template_configs(),
-    warmup=3,
-    rep=20,
-)
-```
-
-## 源语
-
-关于DSL级别的源语，具体参见官方文档：
-[https://tilelang.com/programming\_guides/instructions.html](https://tilelang.com/programming_guides/instructions.html)
-[https://tilelang.com/autoapi/tilelang/index.html](https://tilelang.com/autoapi/tilelang/index.html)
-
-### musa 源语支持情况
-
-| 类别 | 已支持源语 | 未支持源语 |
-| --- | --- | --- |
-| kernel | Kernel<br>KernelLaunchFrame<br>get\_thread\_binding<br>get\_thread\_bindings<br>get\_block\_binding<br>get\_block\_bindings |  |
-| control flow | serial<br>Parallel<br>Persistent<br>Pipelined |  |
-| memory allocate | alloc\_var alloc\_local alloc\_shared alloc\_fragment alloc\_barrier alloc\_reducer | alloc\_tmem alloc\_descriptor alloc\_wgmma\_desc alloc\_tcgen05\_smem\_desc alloc\_tcgen05\_instr\_desc |
-| proxy | ptr<br>make\_tensor<br>Buffer<br>Tensor<br>StridedTensor<br>FragmentBuffer<br>SharedBuffer<br>LocalBuffer |  |
-| data movement | copy<br>c2d\_im2col |  |
-| compute primitives | GemmWarpPolicy<br>gemm<br>gemm\_v1 | gemm\_v2<br>gemm\_sp |
-|  | fill<br>clear |  |
-|  | reduce<br>reduce\_max<br>reduce\_min<br>reduce\_sum<br>reduce\_abssum<br>reduce\_absmax<br>reduce\_bitand<br>reduce\_bitor<br>reduce\_bitxor<br>cumsum<br>finalize\_reducer # check |  |
-| logical helpers | any\_of<br>all\_of |  |
-| synbolics | dynamic<br>symbolic |  |
-| workgroup | ws |  |
-| annotations | use\_swizzle<br>annotate\_layout<br>annotate\_safe\_value<br>annotate\_l2\_hit\_ratio |  |
-| layout | Layout<br>Fragment |  |
-| atomic | atomic\_max<br>atomic\_min<br>atomic\_add<br>atomic\_addx2<br>atomic\_addx4<br>atomic\_load<br>atomic\_store |  |
-| customize | dp4a<br>clamp<br>reshape<br>view<br>loop\_break |  |
-| math\_intrinsics | \_\_log<br>\_\_log2<br>\_\_log10<br>\_\_tan<br>\_\_cos<br>\_\_sin<br>\_\_exp10<br>\_\_exp<br>ieee\_add<br>ieee\_sub<br>ieee\_mul<br>ieee\_fmaf<br>ieee\_frcp<br>ieee\_fsqrt<br>ieee\_frsqrt<br>ieee\_fdiv |  |
-| print | print<br>device\_assert |  |
-| frame | has\_let\_value<br>get\_let\_value |  |
-| utils | index\_to\_coordinates |  |
-| builtin | create\_list\_of\_mbarrier<br>get\_mbarrier<br>create\_tma\_descriptor<br>tma\_load<br>fence\_proxy\_async<br>tma\_store\_arrive<br>tma\_store\_wait<br>set\_max\_nreg<br>inc\_max\_nreg<br>dec\_max\_nreg<br>annotate\_producer\_reg\_dealloc<br>annotate\_consumer\_reg\_alloc<br>no\_set\_max\_nreg<br>disable\_warp\_group\_reg\_alloc<br>mbarrier\_wait\_parity<br>mbarrier\_arrive<br>mbarrier\_expect\_tx<br>warpgroup\_arrive<br>warpgroup\_commit\_batch<br>warpgroup\_wait<br>get\_lane\_idx<br>get\_warp\_idx\_sync<br>get\_warp\_idx<br>get\_warp\_group\_idx<br>shuffle\_elect<br>warpgroup\_fence\_operand<br>wait\_wgmma<br>barrier\_wait<br>barrier\_arrive<br>shfl\_xor<br>shfl\_down<br>shfl\_up<br>sync\_threads<br>sync\_global<br>sync\_grid<br>loop\_break<br>cp\_async\_barrier\_noinc | initialize\_wgmma\_descriptor<br>initialize\_tcgen05\_descriptor<br>increase\_descriptor\_offset<br>tcgen05\_mma\_arrive<br>ptx\_mma\_sm70 |
+TODO
 
 ## musa example
 
@@ -377,6 +304,7 @@ if __name__ == "__main__":
 ```
 
 ### musa flash-attention3
+
 参考 musa_tests/flash_attention/example_mha_fwd_bhsd.py
 
 # MUSA编程扩展与编程限制
@@ -388,9 +316,9 @@ if __name__ == "__main__":
 | T.kernel(xxx, producer\_threads=xxx) | 新增producer\_threads参数 | 开启warp\_specialize特性后，针对simt kernel，可以通过producer\_threads指定生产者线程数 |
 | T.copy(xxx, disable\_tma=True, force\_async\_copy=True) | 新增force\_async\_copy参数 | 在不使用tme特性的前提下，可以通过force\_async\_copy使能ldlms特性 |
 
-## 编程限制
+## 编程语法限制
 
- TODO 
+TODO
 
 # 调试诊断
 
@@ -398,7 +326,7 @@ if __name__ == "__main__":
 
 [https://tilelang.com/autoapi/tilelang/language/print\_op/index.html#module-tilelang.language.print\_op](https://tilelang.com/autoapi/tilelang/language/print_op/index.html#module-tilelang.language.print_op)
 
-Tilelang提供了丰富的print\_op用于打印kernel内部变量，参考
+Tilelang 提供了 `print_op` 用于打印kernel内部变量，参考
 
 ```python
 def debug_print_buffer(M=16, N=16, dtype="float16"):
@@ -413,6 +341,7 @@ def debug_print_buffer(M=16, N=16, dtype="float16"):
     profiler = jit_kernel.get_profiler()
     profiler.run_once()
 ```
+
 ```python
 def _manual_device_assert_triggered():
 
@@ -429,7 +358,7 @@ def _manual_device_assert_triggered():
 
 ## 查看musa c代码（中间产物）
 
-TileLang的编译过程会将kernel代码生成MUSA C代码，然后调用MUSA后端编译器编译成二进制文件，可以通过get\_kernel\_source接口打印MUSA C代码，参考
+TileLang的编译过程会将kernel代码生成MUSA C代码，然后调用MUSA后端编译器编译成二进制文件，可以通过 `get_kernel_source` 接口打印MUSA C代码，参考
 
 ```python
 def elementwise_add(N, num_per_thread=8, threads=256, dtype="float32"):
@@ -462,6 +391,19 @@ kernel = tilelang.compile(
 )
 print(kernel.get_kernel_source())
 ```
+
+## 查看 IR
+
+Tilelang 使用 TVM TIR, 如果想要查看 Pass 前后的 IR, 可以使用 TVM Instruments 机制
+
+```py
+from tvm.ir.instrument import PrintAfterAll
+
+kernel = tilelang.compile(
+    program, out_idx=-1, target="musa", execution_backend="cython", verbose=True, instruments=[PrintAfterAll()]
+)
+```
+
 
 # 性能说明
 
