@@ -198,18 +198,17 @@ Fragment makeGemmFragmentCHopper(const int block_m, const int block_n,
 Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
                               const int warp_m, const int warp_n,
                               const int element_size,
-                              std::array<int, 3> inst_shape) {
-  (void)inst_shape;
-  ICHECK(warp_m % 4 == 0);
-  ICHECK(element_size == 32);
+                              const std::array<int, 3>& inst_shape) {
   int warp_tile_m = block_m / warp_m;
   int warp_tile_n = block_n / warp_n;
+  int inst_m = inst_shape[0];
+  int inst_n = inst_shape[1];
 
-  auto base_layout = makeGemmFragment4x8();
-  auto squad_layout = base_layout->Repeat({4, 1}, true, false);
-  auto block_layout =
-      squad_layout->Repeat({warp_tile_m / 4, warp_tile_n / 8}, false, true);
-  return block_layout->Repeat({warp_m / 4, warp_n}, true, false);
+  auto base_layout = makeGemmFragment4x8()->Repeat({4, 1}, true, false);
+  auto inst_layout = base_layout->Repeat({inst_m / 16, inst_n / 8}, false, true);
+  auto squad_layout = inst_layout->Repeat({warp_tile_m * 4 / inst_m, warp_tile_n / inst_n}, false, false);
+  auto block_layout = squad_layout->Repeat({warp_m / 4, warp_n}, true, false);
+  return block_layout;
 }
 
 Fragment makeGemmFragmentCLinear(const int block_m, const int block_n,
