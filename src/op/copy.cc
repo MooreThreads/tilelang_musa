@@ -1674,6 +1674,17 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
         << "inner_box_dim: " << *inner_box_dim << " is not divisible by 256";
     instruction_dim = 256;
   }
+  if (TargetIsMusa(T.target)) {
+    constexpr int kMusaTmaMaxBytes = 256;
+    int max_elems = kMusaTmaMaxBytes / shared_tensor->dtype.bytes();
+    if (max_elems > 0 && instruction_dim * shared_tensor->dtype.bytes() >
+                             kMusaTmaMaxBytes) {
+      ICHECK((*inner_box_dim) % max_elems == 0)
+          << "inner_box_dim: " << *inner_box_dim
+          << " is not divisible by max_elems: " << max_elems;
+      instruction_dim = max_elems;
+    }
+  }
   ICHECK((*inner_box_dim) % instruction_dim == 0)
       << "inner_box_dim: " << *inner_box_dim
       << " is not divisible by instruction_dim: " << instruction_dim;
