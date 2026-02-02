@@ -197,7 +197,9 @@ Fragment makeGemmFragmentCHopper(const int block_m, const int block_n,
 
 Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
                               const int warp_m, const int warp_n,
-                              const int element_size) {
+                              const int element_size,
+                              std::array<int, 3> inst_shape) {
+  (void)inst_shape;
   ICHECK(warp_m % 4 == 0);
   ICHECK(element_size == 32);
   int warp_tile_m = block_m / warp_m;
