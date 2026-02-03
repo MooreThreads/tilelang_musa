@@ -6,6 +6,8 @@
 #ifndef TVM_TL_LAYOUT_LAYOUT_H_
 #define TVM_TL_LAYOUT_LAYOUT_H_
 
+#include <array>
+
 #include <tvm/arith/analyzer.h>
 #include <tvm/arith/iter_affine_map.h>
 #include <tvm/ffi/object.h>
@@ -157,7 +159,8 @@ Fragment makeGemmFragmentCHopper(const int block_m, const int block_n,
                                  const int element_size);
 Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
                               const int warp_m, const int warp_n,
-                              const int element_size);
+                              const int element_size,
+                              const std::array<int, 3>& inst_shape = {0, 0, 0});
 Fragment makeGemmFragmentCLinear(const int block_m, const int block_n,
                                  const int block_size);
 Fragment makeGemmFragmentA(const int block_m, const int block_n,
