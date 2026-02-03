@@ -43,6 +43,7 @@ struct LowerArgs {
   Map<Buffer, Buffer> buffer_remap;
   Array<Var> buffer_var_gemm;
   Map<Var, Bool> buffer_var_k_major;
+  Map<Var, Bool> buffer_var_sqmma;
   Map<Var, PrimExpr> buffer_var_warp_n;
 };
 
