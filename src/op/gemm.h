@@ -7,6 +7,8 @@
 #ifndef TVM_TL_OP_GEMM_H_
 #define TVM_TL_OP_GEMM_H_
 
+#include <array>
+
 #include "operator.h"
 
 namespace tvm {
@@ -92,6 +94,8 @@ public:
 class GemmNode : public TileOperatorNode {
 public:
   bool CheckWGMMA() const;
+  std::optional<std::array<int, 3>>
+  SelectSQMMAInstShape(int block_size, Target target) const;
   bool AllowSQMMA(int block_size, Target target) const;
   tir::Buffer A, B, C;
   // pointer to the A, B, C

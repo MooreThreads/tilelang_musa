@@ -119,115 +119,150 @@ bool GemmNode::AllowWGMMA(int block_size, Target target) const {
          CheckWGMMA();
 }
 
-bool GemmNode::AllowSQMMA(int block_size, Target target) const {
-  tvm::transform::PassContext ctxt = tvm::transform::PassContext::Current();
-  if (ctxt->GetConfig(kDisableSQMMA, Optional<Bool>()).value_or(false)) {
-    return false;
-  }
+std::optional<std::array<int, 3>>
+GemmNode::SelectSQMMAInstShape(int block_size, Target target) const {
   if (!TargetIsPH1(target)) {
-    return false;
+    return std::nullopt;
   }
   if (A.scope() != "shared.dyn" && A.scope() != "shared") {
-    return false;
+    return std::nullopt;
   }
   if (B.scope() != "shared.dyn" && B.scope() != "shared") {
-    return false;
+    return std::nullopt;
   }
   if (C.scope() != "local.fragment") {
-    return false;
+    return std::nullopt;
   }
   int warp_size = TargetGetWarpSize(target);
   if (block_size % warp_size != 0) {
-    return false;
+    return std::nullopt;
   }
   int num_warps = block_size / warp_size;
   if (num_warps % 4 != 0) {
-    return false;
+    return std::nullopt;
   }
   auto warp_parts =
       policy->ComputeWarpPartition(M, N, block_size, target, GemmInst::kSQMMA);
   int warp_m = warp_parts.first;
   int warp_n = warp_parts.second;
   if (warp_m <= 0 || warp_n <= 0) {
-    return false;
+    return std::nullopt;
   }
   if (warp_m % 4 != 0) {
-    return false;
+    return std::nullopt;
   }
   int warp_groups_m = warp_m / 4;
   if (warp_groups_m <= 0) {
-    return false;
+    return std::nullopt;
   }
   if (M % (warp_m * 4) != 0) {
-    return false;
+    return std::nullopt;
   }
   if (N % (warp_n * 8) != 0) {
-    return false;
+    return std::nullopt;
   }
   int64_t atom_m = M / warp_groups_m;
   int64_t atom_n = N / warp_n;
-  const std::vector<int64_t> valid_k_8bit = {128, 64, 32};
-  const std::vector<int64_t> valid_k_16bit = {64, 32, 16};
-  const std::vector<int64_t> valid_k_32bit = {32, 16, 8};
-  const std::vector<std::pair<int64_t, int64_t>> allowed_mn = {
-      {128, 128}, {128, 64}, {128, 32}, {64, 128}, {64, 64}, {64, 32},
-      {64, 16},  {32, 128}, {32, 64},  {32, 32},  {16, 64}};
-
-  auto k_ok = [&](int64_t k, const std::vector<int64_t> &valid) -> bool {
-    for (auto vk : valid) {
-      if (k >= vk && (k % vk) == 0)
-        return true;
-    }
-    return false;
-  };
-  auto mn_ok = [&](int64_t m, int64_t n) -> bool {
-    for (const auto &mn : allowed_mn) {
-      if ((m % mn.first) == 0 && (n % mn.second) == 0)
-        return true;
-    }
-    return false;
-  };
 
   const auto &a_dtype = A->dtype;
   const auto &b_dtype = B->dtype;
   const auto &c_dtype = C->dtype;
-  bool dtype_ok = false;
+  const bool major_a_is_k = !trans_A;
+  const bool major_b_is_k = trans_B;
 
-  if (a_dtype == DataType::Float(16) && b_dtype == DataType::Float(16)) {
-    dtype_ok = (c_dtype == DataType::Float(32)) &&
-               k_ok(K, valid_k_16bit) && mn_ok(atom_m, atom_n);
+  enum class SqmmaTypeClass : uint8_t { kInt8, kUInt8, kFP16, kBF16, kTF32, kFP8 };
+  std::optional<SqmmaTypeClass> type_class = std::nullopt;
+
+  if (a_dtype == DataType::Float(16) && b_dtype == DataType::Float(16) &&
+      c_dtype == DataType::Float(32)) {
+    type_class = SqmmaTypeClass::kFP16;
   } else if (a_dtype == DataType::BFloat(16) &&
-             b_dtype == DataType::BFloat(16)) {
-    dtype_ok = (c_dtype == DataType::Float(32)) &&
-               k_ok(K, valid_k_16bit) && mn_ok(atom_m, atom_n);
+             b_dtype == DataType::BFloat(16) &&
+             c_dtype == DataType::Float(32)) {
+    type_class = SqmmaTypeClass::kBF16;
   } else if (a_dtype == DataType::Float(32) &&
-             b_dtype == DataType::Float(32)) {
-    dtype_ok = (c_dtype == DataType::Float(32)) &&
-               k_ok(K, valid_k_32bit) && mn_ok(atom_m, atom_n);
-  } else if ((a_dtype.is_float8_e4m3() && b_dtype.is_float8_e4m3()) ||
-             (a_dtype.is_float8_e5m2() && b_dtype.is_float8_e5m2()) ||
-             (a_dtype.is_float8_e4m3() && b_dtype.is_float8_e5m2()) ||
-             (a_dtype.is_float8_e5m2() && b_dtype.is_float8_e4m3())) {
-    dtype_ok = (c_dtype == DataType::Float(32)) &&
-               k_ok(K, valid_k_8bit) && mn_ok(atom_m, atom_n);
-  } else if (a_dtype == DataType::Int(8) && b_dtype == DataType::Int(8)) {
-    dtype_ok = (c_dtype == DataType::Int(32)) &&
-               k_ok(K, valid_k_8bit) && mn_ok(atom_m, atom_n);
-  } else if (a_dtype == DataType::UInt(8) &&
-             b_dtype == DataType::UInt(8)) {
-    dtype_ok = (c_dtype == DataType::UInt(32)) &&
-               k_ok(K, valid_k_8bit) && mn_ok(atom_m, atom_n);
-  } else if ((a_dtype == DataType::Int(8) &&
-              b_dtype == DataType::UInt(8)) ||
-             (a_dtype == DataType::UInt(8) &&
-              b_dtype == DataType::Int(8))) {
-    dtype_ok = (c_dtype == DataType::Int(32) ||
-                c_dtype == DataType::UInt(32)) &&
-               k_ok(K, valid_k_8bit) && mn_ok(atom_m, atom_n);
+             b_dtype == DataType::Float(32) &&
+             c_dtype == DataType::Float(32)) {
+    type_class = SqmmaTypeClass::kTF32;
+  } else if (((a_dtype.is_float8_e4m3() && b_dtype.is_float8_e4m3()) ||
+              (a_dtype.is_float8_e5m2() && b_dtype.is_float8_e5m2()) ||
+              (a_dtype.is_float8_e4m3() && b_dtype.is_float8_e5m2()) ||
+              (a_dtype.is_float8_e5m2() && b_dtype.is_float8_e4m3())) &&
+             c_dtype == DataType::Float(32)) {
+    type_class = SqmmaTypeClass::kFP8;
+  } else if (a_dtype == DataType::Int(8) && b_dtype == DataType::Int(8) &&
+             c_dtype == DataType::Int(32)) {
+    type_class = SqmmaTypeClass::kInt8;
+  } else if (a_dtype == DataType::UInt(8) && b_dtype == DataType::UInt(8) &&
+             c_dtype == DataType::UInt(32)) {
+    type_class = SqmmaTypeClass::kUInt8;
+  } else {
+    return std::nullopt;
   }
-  if (!dtype_ok)
+
+  auto select_inst_n = [](int inst_m,
+                          SqmmaTypeClass tc) -> std::vector<int> {
+    if (tc == SqmmaTypeClass::kTF32) {
+      if (inst_m == 128)
+        return {128, 64};
+      if (inst_m == 64)
+        return {64, 32, 16};
+      if (inst_m == 32)
+        return {64, 32};
+      if (inst_m == 16)
+        return {64};
+      return {};
+    }
+
+    if (inst_m == 128)
+      return {128, 64, 32};
+    if (inst_m == 64)
+      return {128, 64, 32, 16};
+    if (inst_m == 32)
+      return {128, 64, 32};
+    if (inst_m == 16)
+      return {64};
+    return {};
+  };
+
+  std::vector<int> inst_k_candidates;
+  if (*type_class == SqmmaTypeClass::kFP16 || *type_class == SqmmaTypeClass::kBF16) {
+    inst_k_candidates = {64, 32, 16};
+  } else if (*type_class == SqmmaTypeClass::kTF32) {
+    inst_k_candidates = {32, 16, 8};
+  } else {
+    inst_k_candidates = {128, 64, 32};
+  }
+
+  for (int inst_m : {128, 64, 32, 16}) {
+    if (atom_m % inst_m != 0)
+      continue;
+    if (*type_class == SqmmaTypeClass::kTF32 && inst_m == 128 &&
+        (!major_a_is_k || !major_b_is_k)) {
+      continue;
+    }
+
+    for (int inst_n : select_inst_n(inst_m, *type_class)) {
+      if (atom_n % inst_n != 0)
+        continue;
+
+      for (int inst_k : inst_k_candidates) {
+        if (K % inst_k == 0) {
+          return std::array<int, 3>{inst_m, inst_n, inst_k};
+        }
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
+bool GemmNode::AllowSQMMA(int block_size, Target target) const {
+  tvm::transform::PassContext ctxt = tvm::transform::PassContext::Current();
+  if (ctxt->GetConfig(kDisableSQMMA, Optional<Bool>()).value_or(false)) {
     return false;
-  return true;
+  }
+  return SelectSQMMAInstShape(block_size, target).has_value();
 }
 
 GemmInst GemmNode::GetGemmInst(int block_size, Target target) const {
@@ -903,9 +938,12 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
     ICHECK(B.scope() == "shared" || B.scope() == "shared.dyn");
     ICHECK(C.scope() == "local.fragment");
     if (gemm_inst == GemmInst::kSQMMA) {
+      auto sqmma_inst = SelectSQMMAInstShape(block_size, T.target);
+      ICHECK(sqmma_inst.has_value())
+          << "SQMMA is selected but no valid SQMMA instruction is found.";
       // C layout
-      auto fragment =
-          makePHSqmmaFragmentC(M, N, warp_m, warp_n, C->dtype.bits());
+      auto fragment = makePHSqmmaFragmentC(M, N, warp_m, warp_n, C->dtype.bits(),
+                                           *sqmma_inst);
       results.Set(C, fragment->BindThreadRange(thread_range));
 
       // A layout
