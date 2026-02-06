@@ -198,15 +198,17 @@ Fragment makeGemmFragmentCHopper(const int block_m, const int block_n,
 Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
                               const int warp_m, const int warp_n,
                               const int element_size,
-                              const std::array<int, 3>& inst_shape) {
+                              const std::array<int, 3> &inst_shape) {
   int warp_tile_m = block_m / warp_m;
   int warp_tile_n = block_n / warp_n;
   int inst_m = inst_shape[0];
   int inst_n = inst_shape[1];
 
   auto base_layout = makeGemmFragment4x8()->Repeat({4, 1}, true, false);
-  auto inst_layout = base_layout->Repeat({inst_m / 16, inst_n / 8}, false, true);
-  auto squad_layout = inst_layout->Repeat({warp_tile_m * 4 / inst_m, warp_tile_n / inst_n}, false, false);
+  auto inst_layout =
+      base_layout->Repeat({inst_m / 16, inst_n / 8}, false, true);
+  auto squad_layout = inst_layout->Repeat(
+      {warp_tile_m * 4 / inst_m, warp_tile_n / inst_n}, false, false);
   auto block_layout = squad_layout->Repeat({warp_m / 4, warp_n}, true, false);
   return block_layout;
 }
@@ -855,8 +857,31 @@ Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
               << ", continuous=" << mat_continuous
               << ", element_size=" << element_size << ", k_inner=" << k_inner;
   }
-  return makeGemmABSwizzlePH1(mat_stride, mat_continuous, element_size / 8, SG,
-                              SS, SL);
+  int elem_bytes = element_size / 8;
+  int chunk_cols = 256 / elem_bytes;
+  if (mat_continuous <= chunk_cols) {
+    return makeGemmABSwizzlePH1(mat_stride, mat_continuous, elem_bytes, SG, SS,
+                                SL);
+  }
+
+  ICHECK(chunk_cols > 0);
+  ICHECK(mat_continuous % chunk_cols == 0)
+      << "PH1 chunked swizzle requires mat_continuous divisible by chunk_cols, "
+      << "mat_continuous=" << mat_continuous << ", chunk_cols=" << chunk_cols;
+
+  Var row = InputPlaceholder(0);
+  Var col = InputPlaceholder(1);
+  PrimExpr chunk_id = FloorDiv(col, chunk_cols);
+  PrimExpr col_in_chunk = FloorMod(col, chunk_cols);
+
+  auto chunk_swizzle =
+      makeGemmABSwizzlePH1(mat_stride, chunk_cols, elem_bytes, SG, SS, SL);
+  Array<PrimExpr> chunk_out = chunk_swizzle->Forward({row, col_in_chunk});
+  PrimExpr chunk_linear = chunk_out[0] * chunk_cols + chunk_out[1];
+  PrimExpr global_linear = chunk_id * (mat_stride * chunk_cols) + chunk_linear;
+  PrimExpr i = FloorDiv(global_linear, mat_continuous);
+  PrimExpr j = FloorMod(global_linear, mat_continuous);
+  return Layout(Array<PrimExpr>{mat_stride, mat_continuous}, {i, j});
 }
 
 Layout makeGemmABLayoutSm100(int mat_stride, int mat_continuous, int continuity,

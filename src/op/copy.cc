@@ -913,42 +913,110 @@ Stmt CopyNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
  */
 Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
                                arith::Analyzer *analyzer) const {
-  bool is_cpu_target = T.target->GetTargetDeviceType() == kDLCPU;
-  auto simt_loop = MakeSIMTLoop(analyzer);
-  auto fused_loop = Downcast<For>(ParallelLoopFuser::Fuse(simt_loop));
+  auto lower_single_copy = [&](const CopyNode &node) -> Stmt {
+    bool is_cpu_target = T.target->GetTargetDeviceType() == kDLCPU;
+    auto simt_loop = node.MakeSIMTLoop(analyzer);
+    auto fused_loop = Downcast<For>(ParallelLoopFuser::Fuse(simt_loop));
 
-  auto transformed_loop =
-      Downcast<For>(ParallelLoopTransformer::Substitute(fused_loop));
+    auto transformed_loop =
+        Downcast<For>(ParallelLoopTransformer::Substitute(fused_loop));
 
-  For vectorized_thread_loop;
-  auto par_op = ParallelOp(transformed_loop);
+    For vectorized_thread_loop;
+    auto par_op = ParallelOp(transformed_loop);
 
-  if (is_cpu_target) {
-    vectorized_thread_loop = VectorizeLoop(transformed_loop);
-  } else {
-    std::vector<InferLevel> levels = {InferLevel::kCommon, InferLevel::kStrict,
-                                      InferLevel::kFree};
-    for (auto level : levels) {
-      par_op->InferLayout({T.target, T.thread_bounds, T.layout_map, analyzer,
-                           false, T.buffer_remap},
-                          level);
+    if (is_cpu_target) {
+      vectorized_thread_loop = VectorizeLoop(transformed_loop);
+    } else {
+      std::vector<InferLevel> levels = {InferLevel::kCommon,
+                                        InferLevel::kStrict, InferLevel::kFree};
+      for (auto level : levels) {
+        par_op->InferLayout({T.target, T.thread_bounds, T.layout_map, analyzer,
+                             false, T.buffer_remap},
+                            level);
+      }
+      auto loop_layout = par_op->GetLoopLayout();
+      auto thread_loop =
+          PartitionLoop(par_op->GetRoot(), T.thread_var, analyzer, loop_layout);
+      vectorized_thread_loop = VectorizeLoop(thread_loop);
     }
-    auto loop_layout = par_op->GetLoopLayout();
-    auto thread_var = T.thread_var;
-    auto thread_loop =
-        PartitionLoop(par_op->GetRoot(), T.thread_var, analyzer, loop_layout);
-    vectorized_thread_loop = VectorizeLoop(thread_loop);
+
+    Stmt body = vectorized_thread_loop;
+    if (par_op->GetPredicate(T.thread_var).defined()) {
+      body = IfThenElse(par_op->GetPredicate(T.thread_var).value(), body);
+    }
+    if (node.force_async_copy) {
+      body = AttrStmt(make_zero(DataType::Int(32)), attr::kForceAsyncCopy, 1,
+                      body);
+    }
+    return body;
+  };
+
+  bool is_musa_sqmma_norm_copy =
+      TargetIsMusa(T.target) && src.scope() == "global" &&
+      (dst.scope() == "shared" || dst.scope() == "shared.dyn") &&
+      !src_range.empty() && !dst_range.empty() &&
+      T.buffer_var_k_major.count(dst->data) &&
+      T.buffer_var_sqmma.count(dst->data);
+  bool dst_is_k_major = true;
+  if (is_musa_sqmma_norm_copy) {
+    dst_is_k_major = T.buffer_var_k_major[dst->data];
   }
 
-  Stmt body = vectorized_thread_loop;
-  if (par_op->GetPredicate(T.thread_var).defined()) {
-    body = IfThenElse(par_op->GetPredicate(T.thread_var).value(), body);
+  bool need_sqmma_split = false;
+  int split_inner_extent = -1;
+  int split_count = -1;
+  if (is_musa_sqmma_norm_copy) {
+    int elem_bytes = dst->dtype.bytes();
+    int max_inner_elems = elem_bytes > 0 ? 256 / elem_bytes : 0;
+    size_t split_dim_idx = dst_is_k_major
+                               ? (dst_range.size() - 1)
+                               : (dst_range.size() >= 2 ? dst_range.size() - 2
+                                                        : dst_range.size() - 1);
+    auto dst_inner_extent = as_const_int(dst_range[split_dim_idx]->extent);
+    if (max_inner_elems > 0 && dst_inner_extent != nullptr &&
+        (*dst_inner_extent) * elem_bytes > 256) {
+      auto src_inner_extent = as_const_int(src_range[split_dim_idx]->extent);
+      bool dst_divisible = ((*dst_inner_extent) % max_inner_elems) == 0;
+      bool src_divisible = src_inner_extent == nullptr ||
+                           ((*src_inner_extent) % max_inner_elems) == 0;
+      if (dst_divisible && src_divisible) {
+        need_sqmma_split = true;
+        split_inner_extent = max_inner_elems;
+        split_count = (*dst_inner_extent) / max_inner_elems;
+      }
+    }
   }
-  if (force_async_copy) {
-    body = AttrStmt(make_zero(DataType::Int(32)), attr::kForceAsyncCopy, 1,
-                    body);
+
+  if (!need_sqmma_split) {
+    return lower_single_copy(*this);
   }
-  return body;
+
+  auto split_op = tvm::ffi::make_object<CopyNode>(*this);
+  Var split_var("sqmma_split");
+  size_t src_inner_idx =
+      dst_is_k_major
+          ? (split_op->src_range.size() - 1)
+          : (split_op->src_range.size() >= 2 ? split_op->src_range.size() - 2
+                                             : split_op->src_range.size() - 1);
+  size_t dst_inner_idx =
+      dst_is_k_major
+          ? (split_op->dst_range.size() - 1)
+          : (split_op->dst_range.size() >= 2 ? split_op->dst_range.size() - 2
+                                             : split_op->dst_range.size() - 1);
+  auto new_src_range = split_op->src_range;
+  auto new_dst_range = split_op->dst_range;
+  new_src_range.Set(src_inner_idx,
+                    Range::FromMinExtent(new_src_range[src_inner_idx]->min +
+                                             split_var * split_inner_extent,
+                                         split_inner_extent));
+  new_dst_range.Set(dst_inner_idx,
+                    Range::FromMinExtent(new_dst_range[dst_inner_idx]->min +
+                                             split_var * split_inner_extent,
+                                         split_inner_extent));
+  split_op->src_range = new_src_range;
+  split_op->dst_range = new_dst_range;
+  return For(split_var, 0, split_count, ForKind::kUnrolled,
+             lower_single_copy(*split_op));
 }
 
 /**
@@ -1677,8 +1745,8 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
   if (TargetIsMusa(T.target)) {
     constexpr int kMusaTmaMaxBytes = 256;
     int max_elems = kMusaTmaMaxBytes / shared_tensor->dtype.bytes();
-    if (max_elems > 0 && instruction_dim * shared_tensor->dtype.bytes() >
-                             kMusaTmaMaxBytes) {
+    if (max_elems > 0 &&
+        instruction_dim * shared_tensor->dtype.bytes() > kMusaTmaMaxBytes) {
       ICHECK((*inner_box_dim) % max_elems == 0)
           << "inner_box_dim: " << *inner_box_dim
           << " is not divisible by max_elems: " << max_elems;
