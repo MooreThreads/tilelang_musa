@@ -70,6 +70,7 @@ public:
   static_assert(num_warp_m % 4 == 0,
                 "num_warp_m must be a multiple of 4 for sqmma");
 
+  template <int wg_wait = 0>
   static TL_DEVICE void body(A_type_raw *pA, B_type_raw *pB, C_type_raw *pC) {
     const int tid = threadIdx.x;
     Tensor sA = make_tensor(make_smem_ptr(reinterpret_cast<A_type *>(pA)),
@@ -99,6 +100,10 @@ public:
       gemm(tiled_mma, tCrA(_, _, k_block, 0), tCrB(_, _, k_block, 0), acc);
       tiled_mma.accumulate_ = mute::MP31::SQMMA::ScaleOut::One;
     }
+
+    if constexpr (wg_wait >= 0) {
+      warpsquad_wait<wg_wait>();
+    }
   }
 };
 
@@ -123,11 +128,24 @@ TL_DEVICE void gemm_ss(A_type *pA, B_type *pB, C_type *accum) {
     using MMA = mute::tl_sqmma::GemmTensorOp<M, N, K, num_warp_m, num_warp_n,
                                              trans_A, trans_B, clear_accum,
                                              A_type, B_type, C_type>;
-    MMA::body(pA, pB, accum);
+    MMA::template body<wg_wait>(pA, pB, accum);
   } else {
-    static_assert(use_sqmma,
-                  "PH1 WMMA lowering is expected");
+    static_assert(use_sqmma, "PH1 WMMA lowering is expected");
   }
+}
+
+template <int num_mma>
+TL_DEVICE /**
+           * Wait for all WMMA/MMA warps in the current warp-group to
+           * synchronize.
+           *
+           * Blocks until the warp-group-wide rendezvous for `num_mma` MMA lanes
+           * completes, ensuring all participating warps have arrived before
+           * proceeding.
+           */
+    void
+    wait_wgmma() {
+  mute::warpsquad_wait<num_mma>();
 }
 
 } // namespace tl
