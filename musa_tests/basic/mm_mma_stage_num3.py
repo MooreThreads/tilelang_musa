@@ -50,7 +50,6 @@ def matmul(M,
                 T.copy(A[by * block_M, k * block_K], A_shared)
                 T.copy(B[k * block_K, bx * block_N], B_shared)
                 T.gemm(A_shared, B_shared, C_local, policy=policy)
-
             T.copy(C_local, C[by * block_M, bx * block_N])
 
     return matmul_kernel
@@ -64,7 +63,7 @@ def run(M, N, K, bm, bn, bk, dtype, acc_type, num_warp, policy, verbose):
     if verbose >= 1:
         print("Compiling matmul kernel...")
 
-    instruments = [PrintAfterAll()] if verbose >= 2 else []
+    instruments = [PrintAfterAll()] if verbose >= 3 else []
     kernel = tilelang.compile(
         program,
         out_idx=-1,

@@ -490,7 +490,7 @@ def warpgroup_fence_operand(buffer_or_ptr: tir.Buffer | PrimExpr,
         ))
 
 
-def wait_wgmma(id: int):
+def wait_wgmma(id: int = 0):
     """Wait for WGMMA (Warp Group Matrix Multiply-Accumulate) operations to complete.
 
     Args:
@@ -581,13 +581,10 @@ def sync_threads(barrier_id: int = None, arrive_count: int = None):
         args.append(arrive_count)
     return tir.call_intrin("int32", "tir.tvm_storage_sync", "shared", *args)
 
+
 def musa_sync(barrier, thread_count):
     """Synchronize threads via an mbarrier arrive + wait."""
-    return evaluate(
-        tir.call_intrin(
-            "handle", tir.op.Op.get("tl.musa_sync"), barrier, thread_count
-        )
-    )
+    return evaluate(tir.call_intrin("handle", tir.op.Op.get("tl.musa_sync"), barrier, thread_count))
 
 
 def sync_global():
