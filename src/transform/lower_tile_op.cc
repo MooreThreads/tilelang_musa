@@ -111,14 +111,30 @@ public:
   void Clear() {
     buffer_var_gemm_.clear();
     buffer_var_k_major_.clear();
+    buffer_var_sqmma_.clear();
+    in_sqmma_context_ = false;
   }
 
   void Collect(const Stmt &stmt) { VisitStmt(stmt); }
 
   Array<Var> GetBufferVarGemm() { return buffer_var_gemm_; }
   Map<Var, Bool> GetBufferVarKMajor() { return buffer_var_k_major_; }
+  Map<Var, Bool> GetBufferVarSQMMA() { return buffer_var_sqmma_; }
 
 private:
+  void VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == tl::kGemmInst) {
+      bool old = in_sqmma_context_;
+      if (const auto *inst = op->value.as<IntImmNode>()) {
+        in_sqmma_context_ = (inst->value == static_cast<int>(GemmInst::kSQMMA));
+      }
+      VisitStmt(op->body);
+      in_sqmma_context_ = old;
+      return;
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
   void VisitStmt_(const EvaluateNode *op) {
     const CallNode *call_node = op->value.as<CallNode>();
     // Value of EvaluateNode may not be a call
@@ -143,6 +159,10 @@ private:
       buffer_var_gemm_.push_back(dst_buffer_var);
       buffer_var_k_major_.Set(srcA_buffer_var, Bool(!trans_a));
       buffer_var_k_major_.Set(srcB_buffer_var, Bool(trans_b));
+      if (in_sqmma_context_) {
+        buffer_var_sqmma_.Set(srcA_buffer_var, Bool(true));
+        buffer_var_sqmma_.Set(srcB_buffer_var, Bool(true));
+      }
     } else if (call->op.same_as(GemmSP::Get())) {
       auto srcA_buffer_access_ptr = Downcast<Call>(call->args[0]);
       ICHECK(srcA_buffer_access_ptr->op.same_as(builtin::tvm_access_ptr()));
@@ -160,11 +180,17 @@ private:
       buffer_var_gemm_.push_back(dst_buffer_var);
       buffer_var_k_major_.Set(srcA_buffer_var, Bool(!trans_a));
       buffer_var_k_major_.Set(srcB_buffer_var, Bool(trans_b));
+      if (in_sqmma_context_) {
+        buffer_var_sqmma_.Set(srcA_buffer_var, Bool(true));
+        buffer_var_sqmma_.Set(srcB_buffer_var, Bool(true));
+      }
     }
   }
 
   Array<Var> buffer_var_gemm_;
   Map<Var, Bool> buffer_var_k_major_;
+  Map<Var, Bool> buffer_var_sqmma_;
+  bool in_sqmma_context_{false};
 };
 
 /*!
@@ -273,6 +299,7 @@ public:
     collector.Collect(f->body);
     substituter.buffer_var_gemm_ = collector.GetBufferVarGemm();
     substituter.buffer_var_k_major_ = collector.GetBufferVarKMajor();
+    substituter.buffer_var_sqmma_ = collector.GetBufferVarSQMMA();
     PrimFuncNode *fptr = f.CopyOnWrite();
     fptr->body = substituter.VisitStmt(f->body);
     fptr->body =
@@ -733,7 +760,8 @@ private:
     auto lowered = tile_op->Lower(
         LowerArgs{target_, thread_bounds, thread_var_->var, callback,
                   barrier_callback, layout_map_, buffer_remap_,
-                  buffer_var_gemm_, buffer_var_k_major_, buffer_var_warp_n_},
+                  buffer_var_gemm_, buffer_var_k_major_, buffer_var_sqmma_,
+                  buffer_var_warp_n_},
         analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }
@@ -774,6 +802,7 @@ private:
   bool has_tma_{false};
   Array<Var> buffer_var_gemm_;
   Map<Var, Bool> buffer_var_k_major_;
+  Map<Var, Bool> buffer_var_sqmma_;
   Map<Var, PrimExpr> buffer_var_warp_n_;
 };
 
