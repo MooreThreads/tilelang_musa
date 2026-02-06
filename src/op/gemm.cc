@@ -170,7 +170,14 @@ GemmNode::SelectSQMMAInstShape(int block_size, Target target) const {
   const bool major_a_is_k = !trans_A;
   const bool major_b_is_k = trans_B;
 
-  enum class SqmmaTypeClass : uint8_t { kInt8, kUInt8, kFP16, kBF16, kTF32, kFP8 };
+  enum class SqmmaTypeClass : uint8_t {
+    kInt8,
+    kUInt8,
+    kFP16,
+    kBF16,
+    kTF32,
+    kFP8
+  };
   std::optional<SqmmaTypeClass> type_class = std::nullopt;
 
   if (a_dtype == DataType::Float(16) && b_dtype == DataType::Float(16) &&
@@ -180,8 +187,7 @@ GemmNode::SelectSQMMAInstShape(int block_size, Target target) const {
              b_dtype == DataType::BFloat(16) &&
              c_dtype == DataType::Float(32)) {
     type_class = SqmmaTypeClass::kBF16;
-  } else if (a_dtype == DataType::Float(32) &&
-             b_dtype == DataType::Float(32) &&
+  } else if (a_dtype == DataType::Float(32) && b_dtype == DataType::Float(32) &&
              c_dtype == DataType::Float(32)) {
     type_class = SqmmaTypeClass::kTF32;
   } else if (((a_dtype.is_float8_e4m3() && b_dtype.is_float8_e4m3()) ||
@@ -200,8 +206,7 @@ GemmNode::SelectSQMMAInstShape(int block_size, Target target) const {
     return std::nullopt;
   }
 
-  auto select_inst_n = [](int inst_m,
-                          SqmmaTypeClass tc) -> std::vector<int> {
+  auto select_inst_n = [](int inst_m, SqmmaTypeClass tc) -> std::vector<int> {
     if (tc == SqmmaTypeClass::kTF32) {
       if (inst_m == 128)
         return {128, 64};
@@ -226,7 +231,8 @@ GemmNode::SelectSQMMAInstShape(int block_size, Target target) const {
   };
 
   std::vector<int> inst_k_candidates;
-  if (*type_class == SqmmaTypeClass::kFP16 || *type_class == SqmmaTypeClass::kBF16) {
+  if (*type_class == SqmmaTypeClass::kFP16 ||
+      *type_class == SqmmaTypeClass::kBF16) {
     inst_k_candidates = {64, 32, 16};
   } else if (*type_class == SqmmaTypeClass::kTF32) {
     inst_k_candidates = {32, 16, 8};
@@ -643,16 +649,13 @@ Stmt GemmNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
     Buffer accum_buf =
         decl_buffer({IntImm(DataType::Int(32), 1)}, C->dtype, "accum", "local");
-    PrimExpr init_val =
-        clear_accum_bool.value()
-            ? make_const(C->dtype, 0)
-            : BufferLoad(C_buffer, {i, j});
+    PrimExpr init_val = clear_accum_bool.value() ? make_const(C->dtype, 0)
+                                                 : BufferLoad(C_buffer, {i, j});
     Stmt init = BufferStore(accum_buf, init_val, {0});
 
     PrimExpr a_val = Cast(C->dtype, BufferLoad(A_buffer, a_indices()));
     PrimExpr b_val = Cast(C->dtype, BufferLoad(B_buffer, b_indices()));
-    PrimExpr update_val =
-        BufferLoad(accum_buf, {0}) + a_val * b_val;
+    PrimExpr update_val = BufferLoad(accum_buf, {0}) + a_val * b_val;
     Stmt update = BufferStore(accum_buf, update_val, {0});
     Stmt k_loop =
         For(k_iter, 0, IntImm(DataType::Int(32), K), ForKind::kSerial, update);
@@ -660,8 +663,7 @@ Stmt GemmNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     Stmt store_c = BufferStore(C_buffer, BufferLoad(accum_buf, {0}), {i, j});
     Stmt body = SeqStmt({init, k_loop, store_c});
     Stmt guarded = IfThenElse(guard, body);
-    Stmt idx_loop =
-        For(idx_iter, 0, trip, ForKind::kSerial, guarded);
+    Stmt idx_loop = For(idx_iter, 0, trip, ForKind::kSerial, guarded);
 
     return Allocate(accum_buf->data, accum_buf->dtype, accum_buf->shape,
                     const_true(), idx_loop);
@@ -771,7 +773,7 @@ Stmt GemmNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   // Emit wg_wait if necessary
-  if (TargetIsHopper(T.target) && TargetIsPH1(T.target)) {
+  if (TargetIsHopper(T.target) || TargetIsPH1(T.target)) {
     if (wg_wait != 0) {
       ss << ", " << wg_wait;
     }
@@ -942,8 +944,8 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
       ICHECK(sqmma_inst.has_value())
           << "SQMMA is selected but no valid SQMMA instruction is found.";
       // C layout
-      auto fragment = makePHSqmmaFragmentC(M, N, warp_m, warp_n, C->dtype.bits(),
-                                           *sqmma_inst);
+      auto fragment = makePHSqmmaFragmentC(M, N, warp_m, warp_n,
+                                           C->dtype.bits(), *sqmma_inst);
       results.Set(C, fragment->BindThreadRange(thread_range));
 
       // A layout

@@ -2762,16 +2762,6 @@ void CodeGenTileLangMUSA::VisitStmt_(const AttrStmtNode *op) {
     this->stream << "const dim3 blockIdx = " << pattern->value << "();\n";
     this->VisitStmt(op->body);
     return;
-  } else if (op->attr_key == tl::kGemmInst) {
-    this->VisitStmt(op->body);
-
-    const auto *inst = op->value.as<IntImmNode>();
-    // todo: only emit this call in multi buffer pipeline
-    if (inst->value == static_cast<int>(tl::GemmInst::kSQMMA)) {
-      this->PrintIndent();
-      this->stream << "__musa_sqmma_wait();\n";
-    }
-    return;
   }
   CodeGenC::VisitStmt_(op);
 }
