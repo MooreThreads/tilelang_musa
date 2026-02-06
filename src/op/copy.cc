@@ -965,24 +965,47 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
   bool need_sqmma_split = false;
   int split_inner_extent = -1;
   int split_count = -1;
+  size_t split_dim_idx = 0;
   if (is_musa_sqmma_norm_copy) {
-    int elem_bytes = dst->dtype.bytes();
-    int max_inner_elems = elem_bytes > 0 ? 256 / elem_bytes : 0;
-    size_t split_dim_idx = dst_is_k_major
-                               ? (dst_range.size() - 1)
-                               : (dst_range.size() >= 2 ? dst_range.size() - 2
-                                                        : dst_range.size() - 1);
-    auto dst_inner_extent = as_const_int(dst_range[split_dim_idx]->extent);
-    if (max_inner_elems > 0 && dst_inner_extent != nullptr &&
-        (*dst_inner_extent) * elem_bytes > 256) {
-      auto src_inner_extent = as_const_int(src_range[split_dim_idx]->extent);
-      bool dst_divisible = ((*dst_inner_extent) % max_inner_elems) == 0;
-      bool src_divisible = src_inner_extent == nullptr ||
-                           ((*src_inner_extent) % max_inner_elems) == 0;
-      if (dst_divisible && src_divisible) {
-        need_sqmma_split = true;
-        split_inner_extent = max_inner_elems;
-        split_count = (*dst_inner_extent) / max_inner_elems;
+    if (!dst_is_k_major) {
+      int inst_n = -1;
+      if (T.buffer_var_sqmma_inst_n.count(dst->data)) {
+        auto inst_n_imm = T.buffer_var_sqmma_inst_n[dst->data].as<IntImmNode>();
+        if (inst_n_imm) {
+          inst_n = inst_n_imm->value;
+        }
+      }
+      if (inst_n > 0) {
+        split_dim_idx = dst_range.size() >= 2 ? 1 : dst_range.size() - 1;
+        auto dst_n_extent = as_const_int(dst_range[split_dim_idx]->extent);
+        if (dst_n_extent != nullptr && (*dst_n_extent) > inst_n) {
+          auto src_n_extent = as_const_int(src_range[split_dim_idx]->extent);
+          bool dst_divisible = ((*dst_n_extent) % inst_n) == 0;
+          bool src_divisible =
+              src_n_extent == nullptr || ((*src_n_extent) % inst_n) == 0;
+          if (dst_divisible && src_divisible) {
+            need_sqmma_split = true;
+            split_inner_extent = inst_n;
+            split_count = (*dst_n_extent) / inst_n;
+          }
+        }
+      }
+    } else {
+      int elem_bytes = dst->dtype.bytes();
+      int max_inner_elems = elem_bytes > 0 ? 256 / elem_bytes : 0;
+      split_dim_idx = dst_range.size() - 1;
+      auto dst_inner_extent = as_const_int(dst_range[split_dim_idx]->extent);
+      if (max_inner_elems > 0 && dst_inner_extent != nullptr &&
+          (*dst_inner_extent) * elem_bytes > 256) {
+        auto src_inner_extent = as_const_int(src_range[split_dim_idx]->extent);
+        bool dst_divisible = ((*dst_inner_extent) % max_inner_elems) == 0;
+        bool src_divisible = src_inner_extent == nullptr ||
+                             ((*src_inner_extent) % max_inner_elems) == 0;
+        if (dst_divisible && src_divisible) {
+          need_sqmma_split = true;
+          split_inner_extent = max_inner_elems;
+          split_count = (*dst_inner_extent) / max_inner_elems;
+        }
       }
     }
   }
@@ -993,16 +1016,8 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
 
   auto split_op = tvm::ffi::make_object<CopyNode>(*this);
   Var split_var("sqmma_split");
-  size_t src_inner_idx =
-      dst_is_k_major
-          ? (split_op->src_range.size() - 1)
-          : (split_op->src_range.size() >= 2 ? split_op->src_range.size() - 2
-                                             : split_op->src_range.size() - 1);
-  size_t dst_inner_idx =
-      dst_is_k_major
-          ? (split_op->dst_range.size() - 1)
-          : (split_op->dst_range.size() >= 2 ? split_op->dst_range.size() - 2
-                                             : split_op->dst_range.size() - 1);
+  size_t src_inner_idx = split_dim_idx;
+  size_t dst_inner_idx = split_dim_idx;
   auto new_src_range = split_op->src_range;
   auto new_dst_range = split_op->dst_range;
   new_src_range.Set(src_inner_idx,

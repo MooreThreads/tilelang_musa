@@ -62,6 +62,7 @@ struct LayoutInferenceResult {
   Map<For, Fragment> for_map;
   Map<For, PrimExpr> predicate_map;
   Map<Var, PrimExpr> warp_n_map;
+  Map<Var, PrimExpr> sqmma_inst_n_map;
 };
 
 class BufferUseDefCollector : public IRVisitorWithAnalyzer {
@@ -312,7 +313,7 @@ public:
       }
     }
 
-    return {layout_map, for_map, predicate_map, warp_n_map_};
+    return {layout_map, for_map, predicate_map, warp_n_map_, sqmma_inst_n_map_};
   }
 
   void Collect(const PrimFunc &f) {
@@ -368,6 +369,16 @@ private:
                   << "warp_n mismatch for buffer " << gemm->B->name;
             } else {
               warp_n_map_.Set(var, warp_n_expr);
+            }
+            auto sqmma_inst = gemm->SelectSQMMAInstShape(*block_size, target_);
+            if (sqmma_inst.has_value() && !gemm->trans_B) {
+              auto inst_n_expr = IntImm(DataType::Int(32), (*sqmma_inst)[1]);
+              if (sqmma_inst_n_map_.count(var)) {
+                ICHECK(StructuralEqual()(sqmma_inst_n_map_[var], inst_n_expr))
+                    << "sqmma inst_n mismatch for buffer " << gemm->B->name;
+              } else {
+                sqmma_inst_n_map_.Set(var, inst_n_expr);
+              }
             }
           }
         }
@@ -507,6 +518,7 @@ private:
   Target target_;
   LayoutMap annotated_layout_map_;
   Map<Var, PrimExpr> warp_n_map_;
+  Map<Var, PrimExpr> sqmma_inst_n_map_;
   bool skip_thread_partition_{false};
 
   std::vector<TileOperator> BackupInferList() {
@@ -691,6 +703,7 @@ private:
     auto block_ptr = block.CopyOnWrite();
     block_ptr->annotations.Set(attr::kLayoutMap, result_.layout_map);
     block_ptr->annotations.Set(attr::kWarpNMap, result_.warp_n_map);
+    block_ptr->annotations.Set(attr::kSqmmaInstNMap, result_.sqmma_inst_n_map);
     return block;
   }
 
