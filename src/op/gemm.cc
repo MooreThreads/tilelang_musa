@@ -965,9 +965,13 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
       const int64_t b_mat_continuous = *as_const_int(B->shape[dim_B - 1]);
       const int64_t b_continuity =
           trans_B ? b_mat_continuous : b_mat_continuous / warp_n;
+      int b_chunk_cols_override = 0;
+      if (!trans_B) {
+        b_chunk_cols_override = (*sqmma_inst)[1];
+      }
       auto BLayout =
           makeGemmABLayoutPH1(b_mat_stride, b_mat_continuous, b_continuity,
-                              B->dtype.bits(), trans_B);
+                              B->dtype.bits(), trans_B, b_chunk_cols_override);
       results.Set(B, BLayout);
     } else {
       auto fragment = makeGemmFragmentCLinear(M, N, block_size);
