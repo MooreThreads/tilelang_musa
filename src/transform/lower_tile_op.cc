@@ -355,6 +355,25 @@ private:
         }
       }
     }
+    if (op->annotations.count(attr::kSqmmaInstNMap)) {
+      auto inst_n_map = op->annotations.at(attr::kSqmmaInstNMap)
+                            .as<Map<Var, PrimExpr>>()
+                            .value();
+      for (const auto &[var, inst_n] : inst_n_map) {
+        if (buffer_var_sqmma_inst_n_.count(var)) {
+          ICHECK(StructuralEqual()(buffer_var_sqmma_inst_n_[var], inst_n))
+              << "sqmma inst_n mismatch for buffer " << var->name_hint;
+        } else {
+          buffer_var_sqmma_inst_n_.Set(var, inst_n);
+        }
+        if (buffer_var_sqmma_.count(var)) {
+          ICHECK(buffer_var_sqmma_[var] == true)
+              << "sqmma buffer mismatch for buffer " << var->name_hint;
+        } else {
+          buffer_var_sqmma_.Set(var, Bool(true));
+        }
+      }
+    }
     // Begin a new workspace collection frame for this block scope
     workspace_stack_.emplace_back();
 
@@ -761,7 +780,7 @@ private:
         LowerArgs{target_, thread_bounds, thread_var_->var, callback,
                   barrier_callback, layout_map_, buffer_remap_,
                   buffer_var_gemm_, buffer_var_k_major_, buffer_var_sqmma_,
-                  buffer_var_warp_n_},
+                  buffer_var_sqmma_inst_n_, buffer_var_warp_n_},
         analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }
@@ -803,6 +822,7 @@ private:
   Array<Var> buffer_var_gemm_;
   Map<Var, Bool> buffer_var_k_major_;
   Map<Var, Bool> buffer_var_sqmma_;
+  Map<Var, PrimExpr> buffer_var_sqmma_inst_n_;
   Map<Var, PrimExpr> buffer_var_warp_n_;
 };
 
