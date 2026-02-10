@@ -850,10 +850,13 @@ Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
                            int element_size, bool k_inner,
                            int chunk_cols_override) {
   int SG = 0, SS = 256, SL = 256;
-  if (element_size == 8 || (element_size == 16 && k_inner)) {
+  if (element_size == 8 || (element_size == 16 && k_inner) ||
+      (element_size == 32 && k_inner)) {
     SG = 16;
   } else if (element_size == 16 && !k_inner) {
     SG = 32;
+  } else if (element_size == 32 && !k_inner) {
+    SG = 64;
   } else {
     ICHECK(0) << "Unsupported layout for PH1 with stride=" << mat_stride
               << ", continuous=" << mat_continuous
