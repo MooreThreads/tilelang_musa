@@ -1619,6 +1619,9 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
   desc.interleave = TargetIsMusa(T.target)
                         ? static_cast<int>(MU_TENSOR_DESCRIPTOR_INTERLEAVE_NONE)
                         : static_cast<int>(CU_TENSOR_MAP_INTERLEAVE_NONE);
+  desc.swizzle = TargetIsMusa(T.target)
+                     ? static_cast<int>(MU_SMEM_SWIZZLE_GRANULARITY_NONE)
+                     : static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
   Layout shared_layout;
   if (T.layout_map.count(shared_tensor)) {
     shared_layout = T.layout_map.at(shared_tensor);
@@ -1629,9 +1632,13 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
   }
   bool musa_force_swizzle_none = false;
   if (!shared_layout.defined()) {
-    desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
+    desc.swizzle = TargetIsMusa(T.target)
+                       ? static_cast<int>(MU_SMEM_SWIZZLE_GRANULARITY_NONE)
+                       : static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
   } else if (StructuralEqual()(shared_layout, linear_layout)) {
-    desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
+    desc.swizzle = TargetIsMusa(T.target)
+                       ? static_cast<int>(MU_SMEM_SWIZZLE_GRANULARITY_NONE)
+                       : static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
   } else if (TargetIsMusa(T.target) && shared_layout->InputDim() == 2) {
     auto stride = as_const_int(shared_layout->InputShape()[0]);
     auto continuous = as_const_int(shared_layout->InputShape()[1]);
@@ -1697,6 +1704,15 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
         desc.swizzle = static_cast<int>(MU_SMEM_SWIZZLE_GRANULARITY_B16);
       } else if (is_k_major == 0) {
         desc.swizzle = static_cast<int>(MU_SMEM_SWIZZLE_GRANULARITY_B32);
+      } else {
+        LOG(INFO) << src->name << " use elem_bytes " << elem_bytes
+                  << ", unknown matrix layout for swizzle";
+      }
+    } else if (elem_bytes == 4) {
+      if (is_k_major == 1) {
+        desc.swizzle = static_cast<int>(MU_SMEM_SWIZZLE_GRANULARITY_B16);
+      } else if (is_k_major == 0) {
+        desc.swizzle = static_cast<int>(MU_SMEM_SWIZZLE_GRANULARITY_B64);
       } else {
         LOG(INFO) << src->name << " use elem_bytes " << elem_bytes
                   << ", unknown matrix layout for swizzle";
