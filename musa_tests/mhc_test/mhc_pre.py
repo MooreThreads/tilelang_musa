@@ -3,6 +3,15 @@ import math
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.profiler import do_bench
+
+
+def get_test_device() -> str:
+    if hasattr(torch, "musa") and torch.musa.is_available():
+        return "musa"
+    if torch.cuda.is_available():
+        return "cuda"
+    raise RuntimeError("Neither MUSA nor CUDA is available")
 
 
 @tilelang.jit(
@@ -345,7 +354,7 @@ def generate_test_data(
 
     hc_mult2 = hc_mult * hc_mult
     hc_mult3 = hc_mult * 2 + hc_mult2
-    device = "musa"
+    device = get_test_device()
 
     residual = (
         torch.randn((n, hc_mult, hidden_size), dtype=torch.float, device=device).mul(
@@ -391,11 +400,37 @@ def test(n: int, hidden_size: int, hc_mult: int) -> None:
     torch.testing.assert_close(layer_input_fused, layer_input_ref)
 
 
+def benchmark(n: int, hidden_size: int, hc_mult: int) -> None:
+    test_data = generate_test_data(
+        n=n,
+        hc_mult=hc_mult,
+        hidden_size=hidden_size,
+    )
+    ms = do_bench(lambda: mhc_pre(**test_data), warmup=100, rep=100)
+
+    hc_mult3 = hc_mult * (2 + hc_mult)
+    hc_hidden_size = hc_mult * hidden_size
+    io_bytes = (
+        test_data["residual"].numel() * 2 + test_data["fn"].numel() * 4 +
+        test_data["hc_scale"].numel() * 4 + test_data["hc_base"].numel() * 4 + n * hc_mult * 4 +
+        n * hc_mult * hc_mult * 4 + n * hidden_size * 2)
+    # Approx FLOPs: dominant GEMM + pre-apply accumulation.
+    total_flops = 2 * n * hc_mult3 * hc_hidden_size + 2 * n * hidden_size * hc_mult
+    bandwidth_tbps = io_bytes / (ms * 1e-3) / 1e12
+    tflops = total_flops / ms * 1e-9
+    device = str(test_data["residual"].device)
+    print(f"[PERF] case=mhc_pre device={device} "
+          f"params=n={n},hidden_size={hidden_size},hc_mult={hc_mult}")
+    print(f"[PERF] avg_time_ms={ms:.3f} bandwidth_TBps={bandwidth_tbps:.6f} "
+          f"tflops={tflops:.6f}")
+
+
 def main():
-    for n1 in [512, 1024, 2048, 8192]:
-        for hidden_size in [1280, 2560, 4096]:
+    for n1 in [2048, 8192, 12288]:
+        for hidden_size in [4096, 7168, 8192]:
             for hc_mult in [4]:
                 test(n=n1, hidden_size=hidden_size, hc_mult=hc_mult)
+                benchmark(n=n1, hidden_size=hidden_size, hc_mult=hc_mult)
 
 
 if __name__ == "__main__":

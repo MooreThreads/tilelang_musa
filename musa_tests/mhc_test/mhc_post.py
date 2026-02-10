@@ -4,6 +4,15 @@ import torch
 
 import tilelang
 import tilelang.language as T
+from tilelang.profiler import do_bench
+
+
+def get_test_device() -> str:
+    if hasattr(torch, "musa") and torch.musa.is_available():
+        return "musa"
+    if torch.cuda.is_available():
+        return "cuda"
+    raise RuntimeError("Neither MUSA nor CUDA is available")
 
 
 @tilelang.jit(
@@ -84,10 +93,12 @@ def generate_test_data(
     n: int,
     h: int,
     hc_mult: int,
-    device: str = "musa",
+    device: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Generate test data for post operator."""
     torch.random.manual_seed(42)
+    if device is None:
+        device = get_test_device()
 
     x = torch.randn((n, h), dtype=torch.bfloat16, device=device)
     residual = torch.randn((n, hc_mult, h), dtype=torch.bfloat16, device=device)
@@ -110,10 +121,30 @@ def test(n: int, h: int) -> None:
     torch.testing.assert_close(out_tl, out_ref)
 
 
+def benchmark(n: int, h: int) -> None:
+    hc_mult = 4
+    device = get_test_device()
+    test_data = generate_test_data(n=n, h=h, hc_mult=hc_mult, device=device)
+    ms = do_bench(lambda: mhc_post(**test_data), warmup=100, rep=100)
+    io_bytes = (
+        test_data["x"].numel() * 2 + test_data["residual"].numel() * 2 +
+        test_data["post_layer_mix"].numel() * 4 + test_data["comb_res_mix"].numel() * 4 +
+        n * hc_mult * h * 2)
+    # Per output element: one c*d multiply + hc_mult multiply-add accumulations.
+    total_flops = n * h * hc_mult * (2 * hc_mult + 1)
+    bandwidth_tbps = io_bytes / (ms * 1e-3) / 1e12
+    tflops = total_flops / ms * 1e-9
+    print(f"[PERF] case=mhc_post device={device} "
+          f"params=n={n},h={h},hc_mult={hc_mult}")
+    print(f"[PERF] avg_time_ms={ms:.3f} bandwidth_TBps={bandwidth_tbps:.6f} "
+          f"tflops={tflops:.6f}")
+
+
 def main():
-    for n in [4096]:
-        for h in [1280, 2560, 7168]:
+    for n in [12288]:
+        for h in [2560, 4096, 7168]:
             test(n=n, h=h)
+            benchmark(n=n, h=h)
 
 
 if __name__ == "__main__":
