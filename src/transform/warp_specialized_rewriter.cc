@@ -841,10 +841,122 @@ private:
         }
       }
     } else { // consumer case
+      struct ConsumerStmtTraits {
+        bool has_gemm{false};
+        bool has_async_wgmma{false};
+        bool has_wait_wgmma{false};
+      };
+      std::vector<ConsumerStmtTraits> stmt_traits(op->seq.size());
+      auto collect_stmt_traits = [&](const Stmt &stmt) {
+        ConsumerStmtTraits traits;
+        PostOrderVisit(stmt, [&](const ObjectRef &obj) {
+          const auto *call = obj.as<CallNode>();
+          if (call == nullptr) {
+            return;
+          }
+          if (call->op.same_as(wait_wgmma())) {
+            traits.has_wait_wgmma = true;
+            return;
+          }
+          if (!call->op.same_as(tl_gemm()) && !call->op.same_as(tl_gemm_sp())) {
+            return;
+          }
+          traits.has_gemm = true;
+          bool has_async_wgmma = true;
+          if (!call->args.empty()) {
+            if (const auto *op_name = call->args[0].as<StringImmNode>()) {
+              has_async_wgmma = std::string(op_name->value).find("false") ==
+                                std::string::npos;
+            }
+          }
+          traits.has_async_wgmma |= has_async_wgmma;
+        });
+        return traits;
+      };
       for (int i = 0; i < static_cast<int>(op->seq.size()); i++) {
-        Array<Stmt> block_stmt = {};
-        if (marker_.GetRole(op->seq[i]) == Role::kProducer)
+        stmt_traits[i] = collect_stmt_traits(seq_transformed[i]);
+      }
+
+      // Keep release after async wgmma consumption is complete.
+      auto remap_release_to_wait = [&](int src_stmt_idx, int wait_stmt_idx) {
+        for (size_t j = 0; j < map.release[src_stmt_idx].size(); j++) {
+          if (!map.release_after[src_stmt_idx][j]) {
+            continue;
+          }
+          int pattern_idx = map.release[src_stmt_idx][j];
+          bool remapped = false;
+          for (size_t k = 0; k < map.release[wait_stmt_idx].size(); k++) {
+            if (map.release[wait_stmt_idx][k] == pattern_idx) {
+              map.release_after[wait_stmt_idx][k] = true;
+              remapped = true;
+              break;
+            }
+          }
+          if (!remapped) {
+            map.release[wait_stmt_idx].push_back(pattern_idx);
+            map.release_after[wait_stmt_idx].push_back(true);
+          }
+          map.release_after[src_stmt_idx][j] = false;
+        }
+      };
+
+      for (int i = 0; i < static_cast<int>(op->seq.size()); i++) {
+        if (marker_.GetRole(op->seq[i]) == Role::kProducer) {
           continue;
+        }
+        // find async wgmma
+        if (!stmt_traits[i].has_async_wgmma || stmt_traits[i].has_wait_wgmma) {
+          continue;
+        }
+
+        // find next wait_wgmma
+        int wait_stmt_idx = -1;
+        for (int j = i + 1; j < static_cast<int>(op->seq.size()); j++) {
+          if (marker_.GetRole(op->seq[j]) == Role::kProducer) {
+            continue;
+          }
+          if (stmt_traits[j].has_gemm) {
+            break;
+          }
+          if (stmt_traits[j].has_wait_wgmma) {
+            wait_stmt_idx = j;
+            break;
+          }
+        }
+        if (wait_stmt_idx == -1) {
+          continue;
+        }
+
+        // Move all release-after points between async_gemm and wait_wgmma to
+        // after wait_wgmma
+        for (int stmt_idx = i; stmt_idx < wait_stmt_idx; stmt_idx++) {
+          if (marker_.GetRole(op->seq[stmt_idx]) == Role::kProducer) {
+            continue;
+          }
+          remap_release_to_wait(stmt_idx, wait_stmt_idx);
+        }
+      }
+
+      auto emit_group_block = [&](Array<Stmt> block_stmt) {
+        new_body.push_back(MakeGroupBlock(
+            block_stmt.size() == 1 ? block_stmt[0]
+                                   // NOLINTNEXTLINE(performance-move-const-arg)
+                                   : SeqStmt(std::move(block_stmt)),
+            annotations));
+      };
+
+      bool merge_async_gemm_wait = pipeline_info_.op_infos.empty();
+      bool has_pending_gemm_wait_block = false;
+      Array<Stmt> pending_gemm_wait_block;
+
+      for (int i = 0; i < static_cast<int>(op->seq.size()); i++) {
+        if (marker_.GetRole(op->seq[i]) == Role::kProducer) {
+          continue;
+        }
+
+        Array<Stmt> block_stmt = {};
+
+        // emit wait stmt
         for (int pattern_idx : map.acquire[i]) {
           PrimExpr acquire_barrier_id =
               stage_ + num_barriers_ + num_stages_ * pattern_idx;
@@ -853,25 +965,62 @@ private:
                                 : parity_;
           block_stmt.push_back(makeParityWait(acquire_barrier_id, parity));
         }
+        // emit this stmt
         block_stmt.push_back(seq_transformed[i]);
+
+        // emit arrive stmt
         for (size_t j = 0; j < map.release[i].size(); j++) {
-          if (map.release_after[i][j]) {
-            int pattern_idx = map.release[i][j];
-            PrimExpr release_barrier_id =
-                stage_ + num_barriers_ + num_stages_ * pattern_idx;
-            block_stmt.push_back(makeArriveBarrier(release_barrier_id));
-            for (int s = 0; s < num_stages_; s++) {
-              released_barrier_.insert(s + num_barriers_ +
-                                       num_stages_ * pattern_idx);
-            }
+          if (!map.release_after[i][j]) {
+            continue;
+          }
+          int pattern_idx = map.release[i][j];
+          PrimExpr release_barrier_id =
+              stage_ + num_barriers_ + num_stages_ * pattern_idx;
+          block_stmt.push_back(makeArriveBarrier(release_barrier_id));
+          for (int s = 0; s < num_stages_; s++) {
+            released_barrier_.insert(s + num_barriers_ +
+                                     num_stages_ * pattern_idx);
           }
         }
-        new_body.push_back(MakeGroupBlock(
-            block_stmt.size() == 1 ? block_stmt[0]
-                                   // NOLINTNEXTLINE(performance-move-const-arg)
-                                   : SeqStmt(std::move(block_stmt)),
-            annotations));
+
+        if (!merge_async_gemm_wait) {
+          emit_group_block(std::move(block_stmt));
+          continue;
+        }
+
+        // merge block between wait and arrive
+        bool starts_async_gemm_chain =
+            stmt_traits[i].has_async_wgmma && !stmt_traits[i].has_wait_wgmma;
+        if (!has_pending_gemm_wait_block) {
+          if (starts_async_gemm_chain) {
+            has_pending_gemm_wait_block = true;
+            pending_gemm_wait_block = std::move(block_stmt);
+          } else {
+            emit_group_block(std::move(block_stmt));
+          }
+          continue;
+        }
+
+        if (starts_async_gemm_chain) {
+          emit_group_block(std::move(pending_gemm_wait_block));
+          pending_gemm_wait_block = std::move(block_stmt);
+          has_pending_gemm_wait_block = true;
+          continue;
+        }
+
+        for (const Stmt &stmt : block_stmt) {
+          pending_gemm_wait_block.push_back(stmt);
+        }
+        if (stmt_traits[i].has_wait_wgmma) {
+          emit_group_block(std::move(pending_gemm_wait_block));
+          pending_gemm_wait_block = {};
+          has_pending_gemm_wait_block = false;
+        }
       }
+      if (has_pending_gemm_wait_block) {
+        emit_group_block(std::move(pending_gemm_wait_block));
+      }
+
       // Filter out the producer stmts
       int cur_id = 0;
       PipelineInfo new_pipeline_info;
