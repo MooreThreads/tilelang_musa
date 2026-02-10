@@ -160,7 +160,7 @@ Fragment makeGemmFragmentCHopper(const int block_m, const int block_n,
 Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
                               const int warp_m, const int warp_n,
                               const int element_size,
-                              const std::array<int, 3>& inst_shape = {0, 0, 0});
+                              const std::array<int, 3> &inst_shape = {0, 0, 0});
 Fragment makeGemmFragmentCLinear(const int block_m, const int block_n,
                                  const int block_size);
 Fragment makeGemmFragmentA(const int block_m, const int block_n,
@@ -185,7 +185,8 @@ Layout makeGemmABLayoutHopper(int mat_stride, int mat_continuous,
                               int continuity, int element_size,
                               bool k_inner = true);
 Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
-                           int element_size, bool k_inner);
+                           int element_size, bool k_inner,
+                           int chunk_cols_override = 0);
 Layout makeGemmABLayoutSm100(int mat_stride, int mat_continuous, int continuity,
                              int element_size, bool k_inner = true);
 Layout makeGemmABLayoutCDNA(int stride, int continuous, int element_size,
@@ -215,6 +216,8 @@ namespace attr {
 constexpr const char *kLayoutMap = "layout_map";
 // BlockAttr, Containing warp_n info for gemm-related buffers in the block
 constexpr const char *kWarpNMap = "warp_n_map";
+// BlockAttr, Containing sqmma inst_n info for gemm-related buffers in the block
+constexpr const char *kSqmmaInstNMap = "sqmma_inst_n_map";
 } // namespace attr
 
 } // namespace tl

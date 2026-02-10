@@ -803,8 +803,8 @@ Layout makeGemmABLayoutHopper(int mat_stride, int mat_continuous,
               << ", element_size=" << element_size << ", k_inner=" << k_inner;
 }
 
-Layout makeGemmABSwizzlePH1(int stride, int continuous, int element_size,
-                            int SG, int SS, int SL) {
+Layout makeGemmABSwizzlePH1(int stride, int continuous, int elem_bytes, int SG,
+                            int SS, int SL, int swizzle_offset) {
   // row (当前元素行坐标)
   // col (当前元素列坐标)
   Var row = InputPlaceholder(0);
@@ -812,7 +812,7 @@ Layout makeGemmABSwizzlePH1(int stride, int continuous, int element_size,
 
   // (row, col) -> addr
   // addr (当前元素地址)
-  PrimExpr addr = (row * continuous + col) * element_size;
+  PrimExpr addr = (row * continuous + col) * elem_bytes;
 
   // addr -> (line_id, line_offset)
   // line_id (当前元素的Swizzle Line ID)
@@ -824,7 +824,8 @@ Layout makeGemmABSwizzlePH1(int stride, int continuous, int element_size,
   PrimExpr sg_per_sl = FloorDiv(SL, SG);
 
   // cycle_line_id (一个swizzle周期内的Swizzle Line Id)
-  PrimExpr cycle_line_id = FloorMod(line_id, sg_per_sl);
+  PrimExpr offset_line_id = FloorDiv(swizzle_offset, SL);
+  PrimExpr cycle_line_id = FloorMod(line_id + offset_line_id, sg_per_sl);
 
   // line_offset -> (sg_id, sg_offset)
   // sg_id (当前元素在当前Swizzle Line中的Swizzle Granularity ID)
@@ -839,14 +840,15 @@ Layout makeGemmABSwizzlePH1(int stride, int continuous, int element_size,
   // target_addr (当前元素Swizzle后的addr)
   PrimExpr target_addr = line_id * SL + target_line_offset;
 
-  PrimExpr i = FloorDiv(target_addr, continuous * element_size);
+  PrimExpr i = FloorDiv(target_addr, continuous * elem_bytes);
   PrimExpr j =
-      FloorDiv(FloorMod(target_addr, continuous * element_size), element_size);
+      FloorDiv(FloorMod(target_addr, continuous * elem_bytes), elem_bytes);
   return Layout(Array<PrimExpr>{stride, continuous}, {i, j});
 }
 
 Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
-                           int element_size, bool k_inner) {
+                           int element_size, bool k_inner,
+                           int chunk_cols_override) {
   int SG = 0, SS = 256, SL = 256;
   if (element_size == 8 || (element_size == 16 && k_inner)) {
     SG = 16;
@@ -858,10 +860,11 @@ Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
               << ", element_size=" << element_size << ", k_inner=" << k_inner;
   }
   int elem_bytes = element_size / 8;
-  int chunk_cols = 256 / elem_bytes;
+  int chunk_cols =
+      chunk_cols_override > 0 ? chunk_cols_override : 256 / elem_bytes;
   if (mat_continuous <= chunk_cols) {
     return makeGemmABSwizzlePH1(mat_stride, mat_continuous, elem_bytes, SG, SS,
-                                SL);
+                                SL, 0);
   }
 
   ICHECK(chunk_cols > 0);
@@ -874,11 +877,43 @@ Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
   PrimExpr chunk_id = FloorDiv(col, chunk_cols);
   PrimExpr col_in_chunk = FloorMod(col, chunk_cols);
 
-  auto chunk_swizzle =
-      makeGemmABSwizzlePH1(mat_stride, chunk_cols, elem_bytes, SG, SS, SL);
-  Array<PrimExpr> chunk_out = chunk_swizzle->Forward({row, col_in_chunk});
-  PrimExpr chunk_linear = chunk_out[0] * chunk_cols + chunk_out[1];
-  PrimExpr global_linear = chunk_id * (mat_stride * chunk_cols) + chunk_linear;
+  int swizzle_bytes = mat_stride * chunk_cols * elem_bytes;
+  int swizzle_cycle_bytes = (SL / SG) * SL;
+  if (swizzle_bytes >= swizzle_cycle_bytes) {
+    auto chunk_swizzle =
+        makeGemmABSwizzlePH1(mat_stride, chunk_cols, elem_bytes, SG, SS, SL, 0);
+    Array<PrimExpr> chunk_out = chunk_swizzle->Forward({row, col_in_chunk});
+    PrimExpr chunk_linear = chunk_out[0] * chunk_cols + chunk_out[1];
+    PrimExpr global_linear =
+        chunk_id * (mat_stride * chunk_cols) + chunk_linear;
+    PrimExpr i = FloorDiv(global_linear, mat_continuous);
+    PrimExpr j = FloorMod(global_linear, mat_continuous);
+    return Layout(Array<PrimExpr>{mat_stride, mat_continuous}, {i, j});
+  }
+
+  ICHECK(swizzle_bytes * 2 == swizzle_cycle_bytes);
+
+  PrimExpr cycle_id = FloorMod(chunk_id, 2);
+  PrimExpr global_cycle_linear;
+  for (int index = 0; index < 2; ++index) {
+    int swizzle_offset = index * swizzle_bytes;
+    auto chunk_swizzle = makeGemmABSwizzlePH1(
+        mat_stride, chunk_cols, elem_bytes, SG, SS, SL, swizzle_offset);
+    Array<PrimExpr> chunk_out = chunk_swizzle->Forward({row, col_in_chunk});
+    PrimExpr chunk_linear = chunk_out[0] * chunk_cols + chunk_out[1];
+    PrimExpr global_block_linear =
+        index * (mat_stride * chunk_cols) + chunk_linear;
+    PrimExpr pred = (cycle_id == index);
+    if (index == 0) {
+      global_cycle_linear = global_block_linear;
+    } else {
+      global_cycle_linear =
+          Select(pred, global_block_linear, global_cycle_linear);
+    }
+  }
+  PrimExpr global_linear =
+      FloorDiv(chunk_id, 2) * (2 * mat_stride * chunk_cols) +
+      global_cycle_linear;
   PrimExpr i = FloorDiv(global_linear, mat_continuous);
   PrimExpr j = FloorMod(global_linear, mat_continuous);
   return Layout(Array<PrimExpr>{mat_stride, mat_continuous}, {i, j});
