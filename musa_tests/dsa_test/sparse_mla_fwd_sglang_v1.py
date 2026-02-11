@@ -4,6 +4,14 @@ import tilelang
 from tilelang import language as T
 
 
+def get_test_device() -> str:
+    if hasattr(torch, "musa") and torch.musa.is_available():
+        return "musa"
+    if torch.cuda.is_available():
+        return "cuda"
+    raise RuntimeError("Neither MUSA nor CUDA is available")
+
+
 @tilelang.jit(
     out_idx=[-1],
     pass_configs={
@@ -65,9 +73,6 @@ def sparse_attention_fwd_kernel_v1(
         REPLICATE_H = 1
 
     H_per_block = padded_H if REPLICATE_H == 1 else 64
-
-    num_stages = 0
-    threads = 128
 
     @T.prim_func
     def main(
@@ -176,7 +181,6 @@ def sparse_mla_fwd_interface(
     sm_scale=None,
     return_p_sum: bool = False,
     d_v=64,
-    block_I=64,
     num_stages=2,
     threads=256,
 ):
@@ -203,7 +207,6 @@ def sparse_mla_fwd_interface(
         kv_group=kv_group,
         sm_scale=sm_scale,
         is_causal=is_casual,
-        block_I=block_I,
         num_stages=num_stages,
         threads=threads,
     )
@@ -263,33 +266,31 @@ def test_sparse_mla_fwd(
     topk=2048,
     dtype=torch.bfloat16,
     check_correctness=True,
-    block_I=64,
     num_stages=2,
     threads=256,
 ):
     torch.random.manual_seed(0)
-    q = torch.randn((B, S, H, DQK), dtype=dtype, device="musa").requires_grad_(True)
-    kv = torch.randn((B, SKV, HKV, DQK), dtype=dtype, device="musa").requires_grad_(True)
+    device = get_test_device()
+    q = torch.randn((B, S, H, DQK), dtype=dtype, device=device).requires_grad_(True)
+    kv = torch.randn((B, SKV, HKV, DQK), dtype=dtype, device=device).requires_grad_(True)
 
-    indices = torch.full((B, S, HKV, topk), -1, dtype=torch.int32, device="musa")
+    indices = torch.full((B, S, HKV, topk), -1, dtype=torch.int32, device=device)
     for b in range(B):
         for t in range(S):
             for h in range(HKV):
-                i_i = torch.randperm(max(1, t))[:topk]
+                i_i = torch.randperm(max(1, t), device=device)[:topk]
                 indices[b, t, h, :len(i_i)] = i_i
 
-    tl_out = sparse_mla_fwd_interface(
-        q, kv, indices, block_I=block_I, num_stages=num_stages, threads=threads)
+    tl_out = sparse_mla_fwd_interface(q, kv, indices, num_stages=num_stages, threads=threads)
 
     if check_correctness:
         # otherwise may cause out of memory
         ref_out = ref_sparse_mla_fwd_interface(q.cpu(), kv.cpu(), indices.cpu())
-        torch.testing.assert_close(tl_out, ref_out.musa(), rtol=1e-2, atol=1e-2)
+        torch.testing.assert_close(tl_out, ref_out.to(device), rtol=1e-2, atol=1e-2)
         print("assert_tensors_similar passed")
 
     def fn():
-        return sparse_mla_fwd_interface(
-            q, kv, indices, block_I=block_I, num_stages=num_stages, threads=threads)
+        return sparse_mla_fwd_interface(q, kv, indices, num_stages=num_stages, threads=threads)
 
     from tilelang.profiler import do_bench
 
@@ -298,8 +299,6 @@ def test_sparse_mla_fwd(
         rep=100,
         warmup=250,
     )
-    print(f"Average time: {ms:.3f} ms")
-
     # IO bandwidth calculation (bytes transferred)
     # Q input: B * S * H * DQK * 2 (bf16)
     # KV input: B * S * HKV * topk * (DV + DQK) * 2 (bf16, read D twice + D_tail once)
@@ -308,23 +307,28 @@ def test_sparse_mla_fwd(
     io_bytes = (
         B * S * H * DQK * 2 + B * S * HKV * topk * (DV + DQK) * 2 + B * S * HKV * topk * 4 +
         B * S * H * DV * 2)
-    print("fwd io bandwidth (TB/s) = ", io_bytes / (ms * 1e-3) / 1e12)
-    print("fwd tflops = ", (B * S * (DQK + DV) * topk * 2 * H) / (ms * 1e-3) / 1e12)
+    total_flops = B * S * (DQK + DV) * topk * 2 * H
+    bandwidth_tbps = io_bytes / (ms * 1e-3) / 1e12
+    tflops = total_flops / ms * 1e-9
+    print(f"[PERF] case=sparse_mla_fwd_sglang_v1 device={device} "
+          f"params=B={B},S={S},SKV={SKV},H={H},HKV={HKV},DQK={DQK},DV={DV},"
+          f"topk={topk}")
+    print(f"[PERF] avg_time_ms={ms:.3f} bandwidth_TBps={bandwidth_tbps:.6f} "
+          f"tflops={tflops:.6f}")
 
 
 if __name__ == "__main__":
     test_sparse_mla_fwd(
         B=1,
-        S=512,
-        SKV=512,
+        S=1536,
+        SKV=1536,
         H=64,
         HKV=1,
-        DQK=96,
-        DV=64,
-        topk=128,
+        DQK=576,
+        DV=512,
+        topk=384,
         dtype=torch.bfloat16,
         check_correctness=True,
-        block_I=32,
-        num_stages=2,
+        num_stages=0,
         threads=256,
     )
