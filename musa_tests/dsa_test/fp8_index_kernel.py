@@ -2,29 +2,38 @@ import torch
 import tilelang
 import tilelang.language as T
 
-
-FP8 = "float8_e4m3"
-BF16 = "bfloat16"
-FP32 = "float32"
-
+tilelang.disable_cache()
+tilelang.set_log_level("WARNING")
 
 pass_configs = {
     tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
     tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-    tilelang.PassConfigKey.TL_DISABLE_FAST_MATH: True,
 }
+if hasattr(tilelang.PassConfigKey, "TL_DISABLE_FAST_MATH"):
+    pass_configs[tilelang.PassConfigKey.TL_DISABLE_FAST_MATH] = True
+elif hasattr(tilelang.PassConfigKey, "TL_ENABLE_FAST_MATH"):
+    pass_configs[tilelang.PassConfigKey.TL_ENABLE_FAST_MATH] = False
 
-tilelang.disable_cache()
+FP8 = "float8_e4m3"
+FP32 = "float32"
 
 
-@tilelang.jit(target="musa", pass_configs=pass_configs, out_idx=[4])
+def get_test_device() -> str:
+    if hasattr(torch, "musa") and torch.musa.is_available():
+        return "musa"
+    if torch.cuda.is_available():
+        return "cuda"
+    raise RuntimeError("Neither MUSA nor CUDA is available")
+
+
+@tilelang.jit(out_idx=[4], pass_configs=pass_configs)
 def fp8_index_kernel(h: int, d: int):
     b = T.symbolic("b")
     m = T.symbolic("m")
     n = T.symbolic("n")
 
-    blk_n1 = 64
-    blk_n2 = 32
+    blk_n1 = 128
+    blk_n2 = 128
 
     @T.prim_func
     def fp8_index_kernel_(
@@ -41,7 +50,7 @@ def fp8_index_kernel(h: int, d: int):
             q_s_frag = T.alloc_fragment(h, FP32)
             T.copy(q_s[i_b, i_m, 0], q_s_frag)
 
-            for i2_n in T.Pipelined(blk_n1 // blk_n2, num_stages=1):
+            for i2_n in T.Pipelined(blk_n1 // blk_n2, num_stages=2):
                 k_smem = T.alloc_shared((blk_n2, d), FP8)
                 T.copy(k[i_b, i1_n * blk_n1 + i2_n * blk_n2, 0], k_smem)
 
@@ -78,67 +87,71 @@ def fp8_index(
     k: torch.Tensor,
     k_s: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Perform index score using FP8 precision.
-    Args:
-        q (torch.Tensor): The Q tensor, must be contiguous.
-        q_s (torch.Tensor): The scaling factor for Q (float), must be contiguous.
-        k (torch.Tensor): The K tensor, must be contiguous.
-        k_s (torch.Tensor): The scaling factor for K (e8m0 here), must be contiguous.
-        fp8 q @ fp8 k -> fp32 logits
-        relu(fp32 logits) * q_s (weights) -> fp32 logits
-        fp32 logits -> fp32 logits_sum
-        fp32 logits_sum * k_s (e8m0) -> fp32 index_score
-    """
-    kernel = fp8_index_kernel(q.shape[2], q.shape[3])
-    return kernel(q, q_s, k, k_s)
+    return fp8_index_kernel(q.shape[2], q.shape[3])(q, q_s, k, k_s)
 
 
-def fp8_index_torch(q, q_s, k, k_s):
-    # q: (B, M, H, D) fp8_e4m3fn
-    # q_s: (B, M, H) float
-    # k: (B, N, D) fp8_e4m3fn
-    # k_s: (B, N) float
-    B, M, H, D = q.shape
-    assert k.shape[0] == B and k.shape[2] == D
-    N = k.shape[1]
-    assert q_s.shape == (B, M, H)
-    assert k_s.shape == (B, N)
-
-    q_f = q.float()  # accum in fp32
+def fp8_index_torch(
+    q: torch.Tensor,
+    q_s: torch.Tensor,
+    k: torch.Tensor,
+    k_s: torch.Tensor,
+) -> torch.Tensor:
+    q_f = q.float()
     k_f = k.float()
-    # logits: (B, M, N, H)
     logits = torch.einsum("bnd,bmhd->bmnh", k_f, q_f)
-    logits = torch.relu(logits) * q_s.unsqueeze(2)  # broadcast over n
-    out = logits.sum(dim=-1) * k_s.unsqueeze(1)  # (B, M, N)
-    return out  # float32
+    logits = torch.relu(logits) * q_s.unsqueeze(2)
+    out = logits.sum(dim=-1) * k_s.unsqueeze(1)
+    return out
 
 
-device = "musa"
+def test_fp8_index(
+    B: int = 64,
+    M: int = 256,
+    H: int = 32,
+    D: int = 32,
+    N: int = 1024,
+    check_correctness: bool = True,
+):
+    torch.random.manual_seed(0)
+    device = get_test_device()
 
-B = 256
-M = 256
-H = 32
-D = 32
-N = 256
+    q_fp32 = torch.randn(B, M, H, D, device=device, dtype=torch.float32)
+    k_fp32 = torch.randn(B, N, D, device=device, dtype=torch.float32)
+    q = q_fp32.to(torch.float8_e4m3fn).contiguous()
+    k = k_fp32.to(torch.float8_e4m3fn).contiguous()
+    q_s = torch.rand(B, M, H, device=device, dtype=torch.float32).contiguous()
+    k_s = torch.rand(B, N, device=device, dtype=torch.float32).contiguous()
 
-q_fp32 = torch.randn(B, M, H, D, device=device, dtype=torch.float32)
-k_fp32 = torch.randn(B, N, D, device=device, dtype=torch.float32)
+    o = fp8_index(q, q_s, k, k_s)
 
-q_fp8 = q_fp32.to(torch.float8_e4m3fn)
-k_fp8 = k_fp32.to(torch.float8_e4m3fn)
+    if check_correctness:
+        o_ref = fp8_index_torch(q, q_s, k, k_s)
+        torch.testing.assert_close(
+            o.to(torch.float32), o_ref.to(torch.float32), rtol=1.25e-2, atol=1.25e-2)
+        print("assert_tensors_similar passed")
 
-q_s = torch.rand(B, M, H, device=device, dtype=torch.float32)
-k_s = torch.rand(B, N, device=device, dtype=torch.float32)
-o = fp8_index(q_fp8, q_s, k_fp8, k_s)
+    def fn():
+        return fp8_index(q, q_s, k, k_s)
 
-o_ref = fp8_index_torch(q_fp8, q_s, k_fp8, k_s)
+    from tilelang.profiler import do_bench
 
-print("q shape:", q_fp8.shape)
-print("q_s shape:", q_s.shape)
-print("k shape:", k_fp8.shape)
-print("k_s shape:", k_s.shape)
-print("o shape:", o.shape)
-print(o_ref)
-print(o)
-torch.testing.assert_close(o.to(torch.float32), o_ref.to(torch.float32), rtol=1.25e-2, atol=1.25e-2)
+    ms = do_bench(fn, rep=100, warmup=250)
+    io_bytes = (q.numel() * 1 + k.numel() * 1 + q_s.numel() * 4 + k_s.numel() * 4 + o.numel() * 4)
+    total_flops = B * M * N * H * D * 2
+    bandwidth_tbps = io_bytes / (ms * 1e-3) / 1e12
+    tflops = total_flops / ms * 1e-9
+    print(f"[PERF] case=fp8_index device={device} "
+          f"params=B={B},M={M},N={N},H={H},D={D}")
+    print(f"[PERF] avg_time_ms={ms:.3f} bandwidth_TBps={bandwidth_tbps:.6f} "
+          f"tflops={tflops:.6f}")
+
+
+if __name__ == "__main__":
+    test_fp8_index(
+        B=64,
+        M=640,
+        H=32,
+        D=32,
+        N=2560,
+        check_correctness=True,
+    )
