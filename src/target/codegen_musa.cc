@@ -897,7 +897,7 @@ void CodeGenTileLangMUSA::PrintStorageSync(const CallNode *op) {
   } else if (sync == "shared" || sync == "shared.dyn") {
     this->PrintIndent();
     if (args.size() == 1) {
-      this->stream << "__syncthreads();\n";
+      this->stream << "__syncthreads_lm();\n";
     } else if (args.size() == 2) {
       auto barrier_id = args[1].as<IntImmNode>()->value;
       this->stream << "tl::__sync_thread_partial<" << barrier_id << ">();\n";
@@ -939,7 +939,7 @@ void CodeGenTileLangMUSA::PrintStorageSync(const CallNode *op) {
     this->PrintIndent();
     this->stream << "}\n";
     this->PrintIndent();
-    this->stream << "__syncthreads();\n";
+    this->stream << "__syncthreads_lm();\n";
   }
 }
 
