@@ -7,6 +7,7 @@ from .swizzle import (
     make_swizzled_layout,  # noqa: F401
     make_volta_swizzled_layout,  # noqa: F401
     make_wgmma_swizzled_layout,  # noqa: F401
+    make_sqmma_swizzled_layout,  # noqa: F401
     make_tcgen05mma_swizzled_layout,  # noqa: F401
     make_full_bank_swizzled_layout,  # noqa: F401
     make_half_bank_swizzled_layout,  # noqa: F401
