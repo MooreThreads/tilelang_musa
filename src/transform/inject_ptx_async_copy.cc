@@ -29,6 +29,7 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include "../op/builtin.h"
 #include "storage_access.h"
 #include "tir/ir/buffer_common.h"
 #include "tvm/tir/stmt.h"
@@ -40,15 +41,96 @@ using namespace tir;
 
 class PTXAsyncCopyInjector : public StmtMutator {
 public:
+  using StmtMutator::VisitStmt_;
+
   Stmt VisitStmt_(const AttrStmtNode *attr) {
     if (attr->attr_key == tir::attr::async_scope) {
-      ICHECK(in_async == false) << "Nested async scopes not supported";
+      bool in_async_prev = in_async;
       in_async = true;
       auto body = this->VisitStmt(attr->body);
-      in_async = false;
+      in_async = in_async_prev;
       return body;
     }
+    if (attr->attr_key == tl::attr::kForceAsyncCopy) {
+      bool in_async_prev = in_async;
+      bool in_force_prev = in_force_async_copy_;
+      in_async = true;
+      in_force_async_copy_ = true;
+      auto body = this->VisitStmt(attr->body);
+      in_async = in_async_prev;
+      in_force_async_copy_ = in_force_prev;
+      if (!in_async_prev) {
+        bool has_cp_async = false;
+        PostOrderVisit(body, [&](const ObjectRef &obj) {
+          if (const auto *call = obj.as<CallNode>()) {
+            if (call->op.same_as(builtin::ptx_cp_async())) {
+              has_cp_async = true;
+            }
+          }
+        });
+        if (has_cp_async) {
+          auto wait_cnt = IntImm(DataType::Int(32), 0);
+          auto wait_stmt = Evaluate(
+              Call(DataType::Void(), builtin::ptx_wait_group(), {wait_cnt}));
+          body = SeqStmt(Array<Stmt>{body, wait_stmt});
+        }
+      }
+      return AttrStmt(attr->node, attr->attr_key, attr->value, body);
+    }
     return StmtMutator::VisitStmt_(attr);
+  }
+
+  Stmt VisitStmt_(const ForNode *op) final {
+    auto stmt = StmtMutator::VisitStmt_(op);
+    const auto *loop = stmt.as<ForNode>();
+    if (!loop || !in_async || !in_force_async_copy_ || !is_zero(loop->min)) {
+      return stmt;
+    }
+
+    const int64_t *extent_ptr = as_const_int(loop->extent);
+    if (extent_ptr == nullptr || *extent_ptr <= 1) {
+      return stmt;
+    }
+
+    const auto *store = loop->body.as<BufferStoreNode>();
+    if (store == nullptr) {
+      return stmt;
+    }
+    if (!(store->buffer.scope() == "shared" ||
+          store->buffer.scope() == "shared.dyn")) {
+      return stmt;
+    }
+    const auto *load = store->value.as<BufferLoadNode>();
+    if (load == nullptr || load->buffer.scope() != "global") {
+      return stmt;
+    }
+    if (store->indices.size() != 1 || load->indices.size() != 1) {
+      return stmt;
+    }
+    if (store->indices[0].dtype().lanes() != 1 ||
+        load->indices[0].dtype().lanes() != 1) {
+      return stmt;
+    }
+
+    Optional<PrimExpr> dst_base =
+        GetUnitStrideBase(store->indices[0], loop->loop_var);
+    Optional<PrimExpr> src_base =
+        GetUnitStrideBase(load->indices[0], loop->loop_var);
+    if (!dst_base.defined() || !src_base.defined()) {
+      return stmt;
+    }
+
+    int bytes = (*extent_ptr) * load->buffer->dtype.bytes();
+    if (!(bytes == 4 || bytes == 8 || bytes == 16)) {
+      return stmt;
+    }
+
+    auto cp_async =
+        MakeCPAsync(load, store, dst_base.value(), src_base.value(), bytes);
+    if (!cp_async.defined()) {
+      return stmt;
+    }
+    return cp_async.value();
   }
 
   Stmt InjectPTX(const BufferLoadNode *load, const BufferStoreNode *store,
@@ -95,16 +177,11 @@ public:
         if (indices_lanes == 1) {
           auto src_offset = load->indices[0];
           auto dst_offset = store->indices[0];
-          Array<PrimExpr> args = {
-              store->buffer->data, mul(dst_offset, PrimExpr(index_factor)),
-              load->buffer->data, src_offset, PrimExpr(bytes)};
-          // use arguments size to indicate whether or not to use predicated
-          // cp.async
-          if (predicated) {
-            args.push_back(predicate_value);
+          auto call = MakeCPAsync(load, store, dst_offset, src_offset, bytes,
+                                  predicated, predicate_value, index_factor);
+          if (call.defined()) {
+            return call.value();
           }
-          return Evaluate(Call(store->buffer->dtype,
-                               tvm::tir::builtin::ptx_cp_async(), args));
         }
 
         // Predicated load don't support vectorized indexing.
@@ -218,7 +295,42 @@ public:
   }
 
 private:
+  Optional<Stmt> MakeCPAsync(const BufferLoadNode *load,
+                             const BufferStoreNode *store,
+                             const PrimExpr &dst_offset,
+                             const PrimExpr &src_offset, int bytes,
+                             bool predicated = false,
+                             const PrimExpr &predicate_value = PrimExpr(),
+                             int index_factor = 1) {
+    Array<PrimExpr> args = {store->buffer->data,
+                            mul(dst_offset, PrimExpr(index_factor)),
+                            load->buffer->data, src_offset, PrimExpr(bytes)};
+    if (predicated) {
+      args.push_back(predicate_value);
+    }
+    return Evaluate(
+        Call(store->buffer->dtype, tvm::tir::builtin::ptx_cp_async(), args));
+  }
+
+  Optional<PrimExpr> GetUnitStrideBase(const PrimExpr &expr, const Var &var) {
+    PrimExpr zero = make_zero(var.dtype());
+    PrimExpr one = make_const(var.dtype(), 1);
+    PrimExpr two = make_const(var.dtype(), 2);
+    PrimExpr base0 = analyzer_.Simplify(Substitute(expr, {{var, zero}}));
+    PrimExpr base1 = analyzer_.Simplify(Substitute(expr, {{var, one}}));
+    PrimExpr base2 = analyzer_.Simplify(Substitute(expr, {{var, two}}));
+    if (!analyzer_.CanProveEqual(base1 - base0, one)) {
+      return Optional<PrimExpr>();
+    }
+    if (!analyzer_.CanProveEqual(base2 - base1, one)) {
+      return Optional<PrimExpr>();
+    }
+    return base0;
+  }
+
+  arith::Analyzer analyzer_;
   bool in_async{false};
+  bool in_force_async_copy_{false};
 };
 
 using namespace tir::transform;
