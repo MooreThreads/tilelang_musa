@@ -15,10 +15,41 @@ def get_test_device() -> str:
 @tilelang.jit(
     out_idx=[-1],
     pass_configs={
-        tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-        tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER:
+            True,
+        tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED:
+            False,
+        tilelang.PassConfigKey.TL_ENABLE_FAST_MATH:
+            True,
+        #tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+        #tilelang.PassConfigKey.TL_ENABLE_MUSA_BURST: True,
+        tilelang.PassConfigKey.TL_ENABLE_REDUCE_BURST:
+            False,
     },
-)
+    compile_flags=[
+        #"-Od3",
+        "-fmusa-flush-denormals-to-zero",
+        "-mllvm",
+        "-misched=mtgpu-max-ilp",
+        "-mllvm",
+        "-mtgpu-if-convert=1",
+        "-mllvm",
+        "-mtgpu-tiny-offset-hint=1",
+        "-mllvm",
+        "-mtgpu-enable-postra-sched=0",
+        "-mllvm",
+        "-misched-recompute-slotindex=1",
+        "-mllvm",
+        "-mtgpu-combine-instr-with-burst=1",
+        "-mllvm",
+        "-mtgpu-combine-fop-instr=1",
+        "-fno-signed-zeros",
+        "-fno-strict-aliasing",
+        "-mllvm",
+        "-mtgpu-load-cluster-mutation=1",
+        "-mllvm",
+        "--num-dwords-of-load-in-mutation=64",
+    ])
 def sparse_attention_fwd_kernel_v1(
     num_heads,
     dim,
@@ -115,8 +146,8 @@ def sparse_attention_fwd_kernel_v1(
             H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
             H1 = H0 + H_per_block
 
-            T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
-            T.copy(Q[b_i, s_i, H0:H1, D:], Q_tail_shared)
+            T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared, force_async_copy=True)
+            T.copy(Q[b_i, s_i, H0:H1, D:], Q_tail_shared, force_async_copy=True)
 
             for i_i in T.Pipelined(NI, num_stages=num_stages):
 
@@ -139,14 +170,14 @@ def sparse_attention_fwd_kernel_v1(
                     KV_shared_qk,
                     acc_s,
                     transpose_B=True,
-                    policy=T.GemmWarpPolicy.FullCol,
+                    policy=T.GemmWarpPolicy.FullRow,
                 )
                 T.gemm(
                     Q_tail_shared,
                     K_tail_shared,
                     acc_s,
                     transpose_B=True,
-                    policy=T.GemmWarpPolicy.FullCol,
+                    policy=T.GemmWarpPolicy.FullRow,
                 )
                 T.copy(m_i, m_i_prev)
                 T.reduce_max(acc_s, m_i, dim=1, clear=False)
@@ -161,7 +192,7 @@ def sparse_attention_fwd_kernel_v1(
                     acc_o[h_i, d_i] = acc_o[h_i, d_i] * alpha[h_i]
 
                 T.copy(acc_s, S_shared)
-                T.gemm(S_shared, KV_shared_vo, acc_o, policy=T.GemmWarpPolicy.FullCol)
+                T.gemm(S_shared, KV_shared_vo, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
             # Rescale
             for h_i, d_i in T.Parallel(H_per_block, D):
@@ -210,6 +241,7 @@ def sparse_mla_fwd_interface(
         num_stages=num_stages,
         threads=threads,
     )
+    #kernel.show_source()
 
     # out [B, S_q, H, D]
     out = kernel(q, kv, indices)
@@ -296,9 +328,12 @@ def test_sparse_mla_fwd(
 
     ms = do_bench(
         fn,
-        rep=100,
-        warmup=250,
+        rep=10,
+        warmup=2,
     )
+    print(f"Average time: {ms:.3f} ms")
+    print("fwd io bandwidth = ", (B * S * DQK * topk * 2) / (ms * 1e-3) / 1e12)
+    print("fwd tflops = ", (B * S * (DQK + DV) * topk * 2 * H) / (ms * 1e-3) / 1e12)
     # IO bandwidth calculation (bytes transferred)
     # Q input: B * S * H * DQK * 2 (bf16)
     # KV input: B * S * HKV * topk * (DV + DQK) * 2 (bf16, read D twice + D_tail once)
@@ -320,15 +355,15 @@ def test_sparse_mla_fwd(
 if __name__ == "__main__":
     test_sparse_mla_fwd(
         B=1,
-        S=1536,
-        SKV=1536,
-        H=64,
+        S=1536,  #1536,
+        SKV=8192,  #1536,
+        H=64,  #64,
         HKV=1,
         DQK=576,
         DV=512,
-        topk=384,
+        topk=2048,
         dtype=torch.bfloat16,
-        check_correctness=True,
-        num_stages=0,
+        check_correctness=False,
+        num_stages=2,
         threads=256,
     )
