@@ -45,6 +45,22 @@ def make_wgmma_swizzled_layout(buffer: tvm.tir.Buffer,
     )
 
 
+# for SQMMA Intrinsics (PH1)
+def make_sqmma_swizzled_layout(buffer: tvm.tir.Buffer,
+                               continuity: int = None,
+                               k_major: bool = True):
+    assert len(buffer.shape) == 2
+    if continuity is None:
+        continuity = int(buffer.shape[1])
+    return _ffi_api.make_sqmma_swizzled_layout(
+        int(buffer.shape[0]),
+        int(buffer.shape[1]),
+        continuity,
+        int(tvm.DataType(buffer.dtype).bits),
+        k_major,
+    )
+
+
 # for TCGEN05MMA Intrinsics
 def make_tcgen05mma_swizzled_layout(buffer: tvm.tir.Buffer,
                                     continuity: int = None,

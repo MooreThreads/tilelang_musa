@@ -952,8 +952,7 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
       int dim_A = A->shape.size();
       const int64_t a_mat_stride = *as_const_int(A->shape[dim_A - 2]);
       const int64_t a_mat_continuous = *as_const_int(A->shape[dim_A - 1]);
-      const int64_t a_continuity =
-          trans_A ? 4 * a_mat_continuous / warp_m : a_mat_continuous;
+      const int64_t a_continuity = a_mat_continuous;
       auto ALayout =
           makeGemmABLayoutPH1(a_mat_stride, a_mat_continuous, a_continuity,
                               A->dtype.bits(), !trans_A);
@@ -963,15 +962,13 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
       int dim_B = B->shape.size();
       const int64_t b_mat_stride = *as_const_int(B->shape[dim_B - 2]);
       const int64_t b_mat_continuous = *as_const_int(B->shape[dim_B - 1]);
-      const int64_t b_continuity =
-          trans_B ? b_mat_continuous : b_mat_continuous / warp_n;
-      int b_chunk_cols_override = 0;
+      int64_t b_continuity = b_mat_continuous;
       if (!trans_B) {
-        b_chunk_cols_override = (*sqmma_inst)[1];
+        b_continuity = (*sqmma_inst)[1];
       }
       auto BLayout =
           makeGemmABLayoutPH1(b_mat_stride, b_mat_continuous, b_continuity,
-                              B->dtype.bits(), trans_B, b_chunk_cols_override);
+                              B->dtype.bits(), trans_B);
       results.Set(B, BLayout);
     } else {
       auto fragment = makeGemmFragmentCLinear(M, N, block_size);

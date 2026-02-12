@@ -185,8 +185,7 @@ Layout makeGemmABLayoutHopper(int mat_stride, int mat_continuous,
                               int continuity, int element_size,
                               bool k_inner = true);
 Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
-                           int element_size, bool k_inner,
-                           int chunk_cols_override = 0);
+                           int element_size, bool k_inner = true);
 Layout makeGemmABLayoutSm100(int mat_stride, int mat_continuous, int continuity,
                              int element_size, bool k_inner = true);
 Layout makeGemmABLayoutCDNA(int stride, int continuous, int element_size,
