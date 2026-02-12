@@ -22,8 +22,8 @@ def get_test_device() -> str:
     },)
 def mhc_post_tilelang(hc: int,
                       hidden: int,
-                      n_thr: int = 32,
-                      h_blk: int = 1024) -> tilelang.JITKernel:
+                      n_thr: int = 128,
+                      h_blk: int = 256) -> tilelang.JITKernel:
     # rename for shorter code
     n = T.dynamic("num_tokens")
     h = hidden
@@ -141,9 +141,9 @@ def benchmark(n: int, h: int) -> None:
 
 
 def main():
-    for n in [12288]:
-        for h in [2560, 4096, 7168]:
-            test(n=n, h=h)
+    for n in [128 * 1024]:
+        for h in [2048, 4096, 8192]:
+            # test(n=n, h=h)
             benchmark(n=n, h=h)
 
 

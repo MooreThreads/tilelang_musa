@@ -1,5 +1,3 @@
-import math
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -33,7 +31,7 @@ def mhc_pre_big_fuse_tilelang(
     """Deeply fused kernels, everything other than gemm & sqrsum in mHC pre block."""
     num_tokens = T.dynamic("num_tokens")
     hc_mult3 = hc_mult * (2 + hc_mult)
-    hidden_block = math.gcd(512, hidden_size)
+    hidden_block = 128
 
     @T.prim_func
     def kernel_impl(
@@ -141,7 +139,7 @@ def mhc_pre_gemm_sqrsum_tilelang(
     hc_mult3: int,
     hc_hidden_size: int,
     token_block: int = 32,
-    hidden_block: int = 256,
+    hidden_block: int = 128,
 ) -> tilelang.JITKernel:
     """Not highly optimized TileLang implementation of fused gemm and sqrsum in mHC pre block."""
     assert hc_mult3 <= 32  # should be 24 usually
@@ -426,7 +424,7 @@ def benchmark(n: int, hidden_size: int, hc_mult: int) -> None:
 
 
 def main():
-    for n1 in [2048, 8192, 12288]:
+    for n1 in [2048, 8192, 32 * 1024]:
         for hidden_size in [4096, 7168, 8192]:
             for hc_mult in [4]:
                 test(n=n1, hidden_size=hidden_size, hc_mult=hc_mult)
