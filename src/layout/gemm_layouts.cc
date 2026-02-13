@@ -847,8 +847,10 @@ Layout makeGemmABSwizzlePH1(int stride, int continuous, int elem_bytes, int SG,
 }
 
 Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
-                           int element_size, bool k_inner,
-                           int chunk_cols_override) {
+                           int element_size, bool k_inner) {
+  ICHECK_LE(continuity, mat_continuous)
+      << "continuity must be <= mat_continuous, continuity=" << continuity
+      << ", mat_continuous=" << mat_continuous;
   int SG = 0, SS = 256, SL = 256;
   if (element_size == 8 || (element_size == 16 && k_inner) ||
       (element_size == 32 && k_inner)) {
@@ -864,13 +866,16 @@ Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
   }
   int elem_bytes = element_size / 8;
   int chunk_cols =
-      chunk_cols_override > 0 ? chunk_cols_override : 256 / elem_bytes;
+      (continuity < mat_continuous) ? continuity : 256 / elem_bytes;
   if (mat_continuous <= chunk_cols) {
     return makeGemmABSwizzlePH1(mat_stride, mat_continuous, elem_bytes, SG, SS,
                                 SL, 0);
   }
 
-  ICHECK(chunk_cols > 0);
+  ICHECK_GT(chunk_cols, 0) << "chunk_cols must be positive";
+  ICHECK_LE(chunk_cols, 256 / elem_bytes)
+      << "chunk_cols must be <= " << (256 / elem_bytes) << ", got "
+      << chunk_cols;
   ICHECK(mat_continuous % chunk_cols == 0)
       << "PH1 chunked swizzle requires mat_continuous divisible by chunk_cols, "
       << "mat_continuous=" << mat_continuous << ", chunk_cols=" << chunk_cols;
