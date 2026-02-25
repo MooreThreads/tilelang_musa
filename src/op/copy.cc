@@ -1921,30 +1921,22 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
 Stmt CopyNode::LowerBulkCopy1D(const LowerArgs &T, arith::Analyzer *analyzer,
                                CopyInst copy_inst) const {
   ICHECK(copy_inst == CopyInst::kBulkLoad1D ||
-         copy_inst == CopyInst::kBulkStore1D)
-      << "Invalid copy inst " << static_cast<int>(copy_inst);
+         copy_inst == CopyInst::kBulkStore1D);
+
+  // Add 1D TMA copy when the global and shared memory is contiguous
+  // Check if shared_tensor->name is present in T.buffer_var_gemm
+  // (Array<PrimExpr>) to avoid use 1D TMA copy for swizzled layout
   bool is_load = copy_inst == CopyInst::kBulkLoad1D;
-  Buffer global_tensor = is_load ? src : dst;
-  Buffer shared_tensor = is_load ? dst : src;
-  Array<Range> global_range = is_load ? src_range : dst_range;
-  Array<Range> shared_range = is_load ? dst_range : src_range;
-  // TMA 1D copy cannot support a swizzled global layout, will be fallback
-  // to normal copy
-  if (T.layout_map.count(global_tensor)) {
-    LOG(WARNING) << "TMA 1D copy cannot support a swizzled global "
-                    "layout, fallback to normal copy.";
-    return LowerNormalCopy(T, analyzer);
+  auto shared_range = is_load ? dst_range : src_range;
+  auto global_range = is_load ? src_range : dst_range;
+  auto shared_tensor = is_load ? dst : src;
+  auto global_tensor = is_load ? src : dst;
+
+  PrimExpr shared_elements = 1;
+  for (size_t i = 0; i < shared_range.size(); i++) {
+    shared_elements *= shared_range[i]->extent;
   }
 
-  // Calculate total elements for 1D descriptor
-  PrimExpr total_elements = 1;
-  for (auto r : global_range) {
-    total_elements *= r->extent;
-  }
-
-  Array<PrimExpr> shared_indices;
-  for (auto r : shared_range)
-    shared_indices.push_back(r->min);
   std::vector<PrimExpr> shared_strides;
   PrimExpr shared_stride = 1;
   for (size_t i = 0; i < shared_tensor->shape.size(); i++) {
@@ -1952,6 +1944,10 @@ Stmt CopyNode::LowerBulkCopy1D(const LowerArgs &T, arith::Analyzer *analyzer,
     shared_strides.insert(shared_strides.begin(), shared_stride);
     shared_stride *= s;
   }
+
+  Array<PrimExpr> shared_indices;
+  for (auto r : shared_range)
+    shared_indices.push_back(r->min);
 
   Array<PrimExpr> global_indices;
   for (auto r : global_range) {
@@ -1965,101 +1961,36 @@ Stmt CopyNode::LowerBulkCopy1D(const LowerArgs &T, arith::Analyzer *analyzer,
     global_stride *= s;
   }
 
-  ICHECK(shared_strides.size() == shared_indices.size())
-      << "shared_strides.size() != shared_indices.size()"
-      << shared_strides.size() << " " << shared_indices.size();
-  PrimExpr shared_offset = 0;
-  for (size_t i = 0; i < shared_indices.size(); i++) {
-    shared_offset += shared_indices[i] * shared_strides[i];
-  }
   PrimExpr global_offset = 0;
   for (size_t i = 0; i < global_indices.size(); i++) {
     global_offset += global_indices[i] * global_strides[i];
   }
 
-  TMADesc desc;
-  // 1D descriptor
-  desc.rank = 1;
-
-  // Verify datatype
-  ICHECK(global_tensor->dtype == shared_tensor->dtype)
-      << "Copy between buffer " << global_tensor->name << " and "
-      << shared_tensor->name << " with different data type "
-      << global_tensor->dtype << " and " << shared_tensor->dtype;
-
-  desc.data_type = TargetIsMusa(T.target)
-                       ? to_MUtensorDescriptorDataType(global_tensor->dtype)
-                       : to_CUtensorMapDataType(global_tensor->dtype);
-
-  // Global Tensor Shape and Stride (1D)
-  desc.global_addr = global_tensor->data;
-  // Calculate total elements for 1D descriptor
-  PrimExpr global_size = 1;
-  for (const auto &dim : global_tensor->shape) {
-    global_size *= dim;
-  }
-  desc.global_shape = {global_size}; // Single dimension with total elements
-  // Global stride in bytes (for 1D, stride is element size)
-  desc.global_stride = {cast(DataType::Int(64), PrimExpr(1)) *
-                        global_tensor->dtype.bytes()};
-
-  // Smem Box (1D)
-  desc.smem_box = {total_elements};
-  desc.smem_stride = {PrimExpr(1)};
-  // L2 & OOB
-  desc.l2_promotion = static_cast<int>(CU_TENSOR_MAP_L2_PROMOTION_L2_128B);
-  desc.oob_fill = static_cast<int>(CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-
-  // Swizzle and Interleave (1D does not need swizzling)
-  desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
-  desc.interleave = TargetIsMusa(T.target)
-                        ? static_cast<int>(MU_TENSOR_DESCRIPTOR_INTERLEAVE_NONE)
-                        : static_cast<int>(CU_TENSOR_MAP_INTERLEAVE_NONE);
-
-  // Apply buffer remap if exists
-  if (T.buffer_remap.count(shared_tensor)) {
-    shared_tensor = T.buffer_remap.at(shared_tensor);
+  PrimExpr shared_offset = 0;
+  for (size_t i = 0; i < shared_indices.size(); i++) {
+    shared_offset += shared_indices[i] * shared_strides[i];
   }
 
-  // Create TMA descriptor
-  Call create_descriptor =
-      Call(DataType::Handle(), create_tma_descriptor(), desc.EncodeCallArgs());
-
-  auto op = is_load ? tma_load() : tma_store();
-
-  // Build TMA call arguments
-  Array<PrimExpr> call_args;
-  call_args.push_back(create_descriptor);
-
+  PrimExpr elements = analyzer->Simplify(shared_elements);
+  PrimExpr shared_addr = shared_tensor.access_ptr(
+      is_load ? 2 : 1, DataType::Handle(), 1, shared_offset, elements);
+  PrimExpr global_addr = global_tensor.access_ptr(
+      is_load ? 1 : 2, DataType::Handle(), 1, global_offset, elements);
+  Stmt tma_copy;
   if (is_load) {
-    call_args.push_back(0); // mbarrier id
+    // the zero is a placeholder for mbarrier ids
+    tma_copy = Evaluate(
+        Call(DataType::Handle(), tma_load(),
+             {shared_addr, global_addr, 0,
+              elements * shared_tensor->dtype.bytes(), this->eviction_policy}));
+  } else {
+    int need_reduce = 0;
+    tma_copy = Evaluate(
+        Call(DataType::Handle(), tma_store(),
+             {global_addr, shared_addr, elements * shared_tensor->dtype.bytes(),
+              need_reduce, this->eviction_policy}));
   }
-
-  // Shared memory address
-  PrimExpr shared_addr =
-      shared_tensor.access_ptr(is_load ? 2 : 1, // access_mask: 2=write, 1=read
-                               DataType::Handle(), // ptr_type
-                               1,                  // content_lanes
-                               shared_offset,      // offset (element-level)
-                               total_elements      // extent
-      );
-  call_args.push_back(shared_addr);
-
-  // Global coordinates (1D: single element offset)
-  call_args.push_back(global_offset);
-
-  if (!is_load) {
-    call_args.push_back(0); // need_reduce
-  }
-
-  call_args.push_back(this->eviction_policy);
-
-  // Generate TMA call
-  Stmt tma_copy = Evaluate(Call(DataType::Handle(), op, call_args));
-
-  // Only execute on thread 0
   tma_copy = IfThenElse(EQ(T.thread_var, T.thread_bounds->min), tma_copy);
-
   return tma_copy;
 }
 

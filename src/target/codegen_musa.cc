@@ -1628,6 +1628,20 @@ void CodeGenTileLangMUSA::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(tl::tma_load())) {
     std::ostringstream ss;
     ICHECK_GE(op->args.size(), 4U);
+    // 1D sTMA load: args[0] is address_of(smem), no descriptor variable
+    // Layout: {smem_ptr, gmem_ptr, mbarrier_id, ize_bytes, eviction_policy}
+    auto arg0_call = op->args[0].as<CallNode>();
+    if (arg0_call && arg0_call->op.same_as(builtin::address_of())) {
+      ss << "tl::tma_load(";
+      ss << this->PrintExpr(op->args[0]) << ", ";
+      ss << this->PrintExpr(op->args[1]) << ", ";
+      ss << print_mbarrier_id(op->args[2]) << ", ";
+      ss << this->PrintExpr(op->args[3]);
+      ss << ");\n";
+      this->PrintIndent();
+      this->stream << ss.str();
+      return;
+    }
     auto eviction_policy =
         this->eviction_policy_names_
             [op->args[op->args.size() - 1].as<IntImmNode>()->value];
@@ -1676,6 +1690,21 @@ void CodeGenTileLangMUSA::VisitExpr_(const CallNode *op, std::ostream &os) {
       return;
     }
     ICHECK_GE(op->args.size(), 4U);
+    // 1D TMA store: args[0] is address_of(gmem), no descriptor variable
+    // Layout: {gmem_ptr, smem_ptr, size_bytes, need_reduce, eviction_policy}
+    {
+      auto arg0_call = op->args[0].as<CallNode>();
+      if (arg0_call && arg0_call->op.same_as(builtin::address_of())) {
+        ss << "tl::tma_store(";
+        ss << this->PrintExpr(op->args[0]) << ", "; // gmem_ptr
+        ss << this->PrintExpr(op->args[1]) << ", "; // smem_ptr
+        ss << this->PrintExpr(op->args[2]);         // size_bytes
+        ss << ");\n";
+        this->PrintIndent();
+        this->stream << ss.str();
+        return;
+      }
+    }
     auto eviction_policy =
         this->eviction_policy_names_
             [op->args[op->args.size() - 1].as<IntImmNode>()->value];
