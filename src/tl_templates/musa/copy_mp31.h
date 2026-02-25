@@ -5,8 +5,19 @@
 #endif
 
 #include "common.h"
+#include <mute/arch/copy_mp31_tme.hpp>
 
 namespace tl {
+
+template <typename BarrierType = uint64_t>
+TL_DEVICE void tma_load(void *smem_ptr, void *gmem_ptr, int32_t const &bar_id,
+                        uint32_t size) {
+  mute::MP31_BLK_COPY_G2S::copy(gmem_ptr, bar_id, smem_ptr, size);
+}
+
+TL_DEVICE void tma_store(void *gmem_ptr, void const *smem_ptr, uint32_t size) {
+  mute::MP31_BLK_COPY_S2G::copy(smem_ptr, gmem_ptr, size);
+}
 
 template <SmemSwizzleGranularity sg = SmemSwizzleGranularity::NONE,
           SmemSwizzleStride ss = SmemSwizzleStride::B256,
