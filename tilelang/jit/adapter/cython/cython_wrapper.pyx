@@ -160,7 +160,10 @@ cdef class CythonKernelWrapper:
         for tensor in inputs:
             if isinstance(tensor, torch.Tensor):
                 return tensor.device
-        return torch.cuda.current_device()
+        if torch.cuda.is_available():
+            return torch.cuda.current_device()
+        elif torch.musa.is_available():
+            return torch_musa.current_device()
 
     cpdef forward(self, list inputs, int64_t stream = -1, bint skip_tensor_validation = False):
         # Validate input dimensions and prepare for kernel execution

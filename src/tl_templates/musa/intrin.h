@@ -57,7 +57,11 @@ get_warp_group_idx(int warp_size = detail::default_warp_size(),
 
 // Elect one thread in the warp. The elected thread gets its predicate set to
 // true, all others obtain false.
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__ >= 310)
 TL_DEVICE uint32_t elect_one_sync() { return (threadIdx.x % 32) == 0; }
+#else
+TL_DEVICE uint32_t elect_one_sync() { return (threadIdx.x % 128) == 0; }
+#endif
 
 /// Returns a warp-uniform value indicating the canonical warp index of the
 /// calling threads. Threads within the warp must be converged.
@@ -104,6 +108,7 @@ template <int thread_extent> TL_DEVICE bool tl_shuffle_elect() {
   // __shfl_sync(mask, value, srcLane): broadcast 'value' from srcLane to all
   // lanes in the warp. Here it broadcasts the group-local warp index from lane
   // 0. Comparing to 0 selects only the group's warp 0.
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__ >= 310)
   return __shfl_sync(0xffffffff, // full warp mask
                      (threadIdx.x / 32) %
                          (thread_extent / 32), // warp index within group
@@ -112,6 +117,16 @@ template <int thread_extent> TL_DEVICE bool tl_shuffle_elect() {
          // Within that group leader warp, elect exactly one lane (typically
          // lane 0) to be the single representative for the group.
          elect_one_sync();
+#else
+  return __shfl_sync(0xffffffff, // full warp mask
+                     (threadIdx.x / 128) %
+                         (thread_extent / 128), // warp index within group
+                     0                          // take the value from lane 0
+                     ) == 0 &&
+         // Within that group leader warp, elect exactly one lane (typically
+         // lane 0) to be the single representative for the group.
+         elect_one_sync();
+#endif // #if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__ >= 310)
 }
 
 } // namespace tl
