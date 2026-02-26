@@ -122,6 +122,7 @@ class LibraryGenerator:
             from tilelang.env import MUTLASS_INCLUDE_DIR
             src = tempfile.NamedTemporaryFile(mode="w", suffix=".mu", delete=False)  # noqa: SIM115
             target_arch = get_musa_arch(get_musa_compute_version(target))
+            musa_arch_macro = target_arch + "0"
             libpath = src.name.replace(".mu", ".so")
             opt_level = os.environ.get("TILELANG_OPT_LEVEL")
             command = [
@@ -133,6 +134,7 @@ class LibraryGenerator:
                 # "-lmusart",
                 # "-lmusa",
                 f"--offload-arch=mp_{target_arch}",
+                f"-D__MUSA_ARCH_LIST__={musa_arch_macro}",
             ]
             if opt_level:
                 command += ["-Od3"]
