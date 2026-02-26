@@ -125,8 +125,18 @@ public:
       return stmt;
     }
 
-    auto cp_async =
-        MakeCPAsync(load, store, dst_base.value(), src_base.value(), bytes);
+    auto dst_elem_type = GetPointerType(store->buffer->data->type_annotation);
+    auto src_elem_type = GetPointerType(load->buffer->data->type_annotation);
+    ICHECK(dst_elem_type.has_value() && src_elem_type.has_value())
+        << "Both store and load buffer should have a pointer type annotation.";
+    int index_factor = 1;
+    if (dst_elem_type.value() != src_elem_type.value()) {
+      ICHECK(dst_elem_type.value() == DataType::UInt(8));
+      index_factor = src_elem_type->bytes();
+    }
+
+    auto cp_async = MakeCPAsync(load, store, dst_base.value(), src_base.value(),
+                                bytes, false, PrimExpr(), index_factor);
     if (!cp_async.defined()) {
       return stmt;
     }
