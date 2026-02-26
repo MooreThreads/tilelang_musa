@@ -5,7 +5,9 @@
 #include <musa_bf16.h>
 #include <musa_fp16.h>
 #include <musa_runtime.h>
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__ >= 310)
 #include <mute/arch/simd_mp31.hpp>
+#endif
 #include <mutlass/fast_math.h>
 #include <mutlass/numeric_types.h>
 #include <sstream> // std::stringstream
@@ -365,6 +367,7 @@ TL_DEVICE bfloat16_t shfl_sync(unsigned mask, bfloat16_t val, int srcLane) {
   return bfloat16_t(r);
 }
 
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
 TL_DEVICE float2 vec_max_f2(float2 a, float2 b) {
   float2 out;
   mute::max(out, a, b);
@@ -405,5 +408,6 @@ TL_DEVICE float4 vec_exp2_f4(float4 a) {
   mute::fast_exp2(out, a);
   return out;
 }
+#endif // defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
 
 } // namespace tl

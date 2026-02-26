@@ -190,7 +190,8 @@ def test_get_warp_group_idx_custom():
 
 
 def test_shuffle_elect_default():
-    run_shuffle_elect(num_threads=256, thread_extent=64)
+    # thread_extent must be an integer multiple of warp_size, qy2 warp_size is 128
+    run_shuffle_elect(num_threads=256, thread_extent=128)
 
 
 def test_shuffle_elect_block_leader():

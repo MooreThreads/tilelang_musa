@@ -176,7 +176,7 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
             mod = tilelang.transform.RewriteWgmmaSync()(mod)
     else:
         mod = tilelang.transform.IfStmtBinding()(mod)
-        if is_musa_target(target):
+        if mcc.is_ph1(target):
             mod = tilelang.transform.LowerReduceBarrier()(mod)
         mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
         mod = tilelang.transform.PipelinePlanning()(mod)
@@ -235,7 +235,7 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
             mod)
     mod = tilelang.transform.ThreadSync("shared")(mod)
     mod = tilelang.transform.ThreadSync("shared.dyn")(mod)
-    if is_musa_target(target):
+    if mcc.is_ph1(target):
         mod = tilelang.transform.RewriteMUSAPartialSync()(mod)
         mod = tilelang.transform.OffsetMbarrierId()(mod)
     # Inject PTX async copy must behind the thread sync pass
