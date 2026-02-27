@@ -571,6 +571,13 @@ def shfl_up(value: int | PrimExpr | tir.Call, offset: int | PrimExpr | tir.Call)
         return tir.call_extern(value.dtype, "__shfl_up_sync", 0xffffffff, value, offset)
 
 
+def sync_warp(mask: int = None):
+    """Synchronize all threads in a warp."""
+    if mask is not None:
+        return tir.call_intrin("void", tir.op.Op.get("tl.sync_warp"), mask)
+    return tir.call_intrin("void", tir.op.Op.get("tl.sync_warp"))
+
+
 def sync_threads(barrier_id: int = None, arrive_count: int = None):
     """Synchronize all threads in a block.
     """
