@@ -1801,6 +1801,13 @@ void CodeGenTileLangMUSA::VisitExpr_(const CallNode *op, std::ostream &os) {
                     "cooperative_groups::this_grid();\n";
     this->PrintIndent();
     this->stream << "grid.sync();\n";
+  } else if (op->op.same_as(tl::sync_warp())) {
+    this->PrintIndent();
+    this->stream << "__syncwarp(";
+    if (!op->args.empty()) {
+      this->stream << this->PrintExpr(op->args[0]);
+    }
+    this->stream << ");\n";
   } else if (op->op.same_as(tl::loop_break())) {
     this->PrintIndent();
     this->stream << "break;\n";
