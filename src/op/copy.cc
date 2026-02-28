@@ -168,6 +168,75 @@ static int to_MUtensorDescriptorDataType(DataType dtype) {
   return static_cast<int>(tp);
 }
 
+static Optional<Layout> GetActiveLayout(const LowerArgs &T, const Buffer &buf) {
+  if (T.layout_map.count(buf)) {
+    return T.layout_map[buf];
+  }
+  for (const auto &[key, layout] : T.layout_map) {
+    if (key->data.same_as(buf->data) || key->name == buf->name) {
+      return layout;
+    }
+  }
+  return Optional<Layout>();
+}
+
+template <typename TValue>
+static Optional<TValue> GetLayoutHintByKey(const Map<Layout, TValue> &hint_map,
+                                           const Layout &layout) {
+  if (hint_map.count(layout)) {
+    return Optional<TValue>(hint_map[layout]);
+  }
+  for (const auto &[key, value] : hint_map) {
+    if (StructuralEqual()(key, layout)) {
+      return Optional<TValue>(value);
+    }
+  }
+  return Optional<TValue>();
+}
+
+static Optional<bool> GetLayoutKMajor(const LowerArgs &T, const Buffer &buf) {
+  auto layout = GetActiveLayout(T, buf);
+  if (!layout.defined()) {
+    return Optional<bool>();
+  }
+  auto k_major = GetLayoutHintByKey(T.layout_k_major, layout.value());
+  if (k_major.has_value()) {
+    return Optional<bool>(k_major.value()->value);
+  }
+  return Optional<bool>();
+}
+
+static Optional<int> GetLayoutSqmmaInstN(const LowerArgs &T,
+                                         const Buffer &buf) {
+  auto layout = GetActiveLayout(T, buf);
+  if (!layout.defined()) {
+    return Optional<int>();
+  }
+  auto inst_n_expr = GetLayoutHintByKey(T.layout_sqmma_inst_n, layout.value());
+  if (!inst_n_expr.has_value()) {
+    return Optional<int>();
+  }
+  if (const auto *imm = inst_n_expr.value().as<IntImmNode>()) {
+    return Optional<int>(static_cast<int>(imm->value));
+  }
+  return Optional<int>();
+}
+
+static Optional<int> GetLayoutWarpN(const LowerArgs &T, const Buffer &buf) {
+  auto layout = GetActiveLayout(T, buf);
+  if (!layout.defined()) {
+    return Optional<int>();
+  }
+  auto warp_n_expr = GetLayoutHintByKey(T.layout_warp_n, layout.value());
+  if (!warp_n_expr.has_value()) {
+    return Optional<int>();
+  }
+  if (const auto *imm = warp_n_expr.value().as<IntImmNode>()) {
+    return Optional<int>(static_cast<int>(imm->value));
+  }
+  return Optional<int>();
+}
+
 /*!
  * \brief Utility function to reverse an array.
  * This is commonly used to convert between row-major and column-major layouts.
@@ -957,16 +1026,13 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
     return body;
   };
 
+  auto dst_k_major_opt = GetLayoutKMajor(T, dst);
   bool is_musa_sqmma_norm_copy =
       TargetIsMusa(T.target) && src.scope() == "global" &&
       (dst.scope() == "shared" || dst.scope() == "shared.dyn") &&
-      !src_range.empty() && !dst_range.empty() &&
-      T.buffer_var_k_major.count(dst->data) &&
+      !src_range.empty() && !dst_range.empty() && dst_k_major_opt.has_value() &&
       T.buffer_var_sqmma.count(dst->data);
-  bool dst_is_k_major = true;
-  if (is_musa_sqmma_norm_copy) {
-    dst_is_k_major = T.buffer_var_k_major[dst->data];
-  }
+  bool dst_is_k_major = dst_k_major_opt.value_or(true);
 
   bool need_sqmma_split = false;
   int split_inner_extent = -1;
@@ -974,13 +1040,7 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
   size_t split_dim_idx = 0;
   if (is_musa_sqmma_norm_copy) {
     if (!dst_is_k_major) {
-      int inst_n = -1;
-      if (T.buffer_var_sqmma_inst_n.count(dst->data)) {
-        auto inst_n_imm = T.buffer_var_sqmma_inst_n[dst->data].as<IntImmNode>();
-        if (inst_n_imm) {
-          inst_n = inst_n_imm->value;
-        }
-      }
+      int inst_n = GetLayoutSqmmaInstN(T, dst).value_or(-1);
       if (inst_n > 0) {
         split_dim_idx = dst_range.size() >= 2 ? 1 : dst_range.size() - 1;
         auto dst_n_extent = as_const_int(dst_range[split_dim_idx]->extent);
@@ -1692,10 +1752,9 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
   }
 
   auto get_k_major = [&](const Buffer &buf) -> int {
-    const auto &data_var = buf->data;
-    for (const auto &[var, k_major] : T.buffer_var_k_major) {
-      if (data_var->name_hint == var->name_hint)
-        return k_major ? 1 : 0;
+    auto k_major_opt = GetLayoutKMajor(T, buf);
+    if (k_major_opt.has_value()) {
+      return k_major_opt.value() ? 1 : 0;
     }
     return -1;
   };
@@ -1734,16 +1793,7 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
   PrimExpr split_size_expr = 0;
   if (TargetIsMusa(T.target) && is_load && desc.rank == 2) {
     auto get_warp_n = [&](const Buffer &buf) -> int {
-      const auto &data_var = buf->data;
-      for (const auto &[var, warp_n] : T.buffer_var_warp_n) {
-        if (data_var->name_hint == var->name_hint) {
-          auto warp_n_imm = warp_n.as<IntImmNode>();
-          if (warp_n_imm) {
-            return warp_n_imm->value;
-          }
-        }
-      }
-      return -1;
+      return GetLayoutWarpN(T, buf).value_or(-1);
     };
     int warp_n = get_warp_n(shared_tensor);
     int is_k_major = get_k_major(shared_tensor);

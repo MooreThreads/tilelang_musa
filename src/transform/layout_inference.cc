@@ -61,8 +61,9 @@ struct LayoutInferenceResult {
   Map<Buffer, Layout> layout_map;
   Map<For, Fragment> for_map;
   Map<For, PrimExpr> predicate_map;
-  Map<Var, PrimExpr> warp_n_map;
-  Map<Var, PrimExpr> sqmma_inst_n_map;
+  Map<Layout, Bool> k_major_map;
+  Map<Layout, PrimExpr> warp_n_map;
+  Map<Layout, PrimExpr> sqmma_inst_n_map;
 };
 
 class BufferUseDefCollector : public IRVisitorWithAnalyzer {
@@ -291,7 +292,7 @@ public:
     ICHECK(infer_list_.size() == thread_var_vec_.size())
         << "infer_list_ and thread_var_vec_ size mismatch";
     for (int i = 0; i < infer_list_.size(); i++) {
-      TileOperator base_infer = std::move(infer_list_[i]);
+      TileOperator base_infer = infer_list_[i];
       auto thread_var = thread_var_vec_[i];
 
       // Check if base_infer is valid
@@ -312,8 +313,13 @@ public:
         }
       }
     }
-
-    return {layout_map, for_map, predicate_map, warp_n_map_, sqmma_inst_n_map_};
+    Map<Layout, Bool> k_major_map;
+    Map<Layout, PrimExpr> warp_n_map;
+    Map<Layout, PrimExpr> sqmma_inst_n_map;
+    BuildLayoutHintsFromInferList(layout_map, k_major_map, warp_n_map,
+                                  sqmma_inst_n_map);
+    return {layout_map,  for_map,    predicate_map,
+            k_major_map, warp_n_map, sqmma_inst_n_map};
   }
 
   void Collect(const PrimFunc &f) {
@@ -353,35 +359,6 @@ private:
             IntImm(dtype, min_value), IntImm(dtype, extent)));
       } else {
         thread_bounds_vec_.push_back(Range::FromMinExtent(0, 1));
-      }
-
-      if (const auto *gemm = p.as<GemmNode>()) {
-        if (TargetIsPH1(target_)) {
-          auto thread_bounds = thread_bounds_vec_.back();
-          auto block_size = as_const_int(thread_bounds->extent);
-          if (gemm->AllowSQMMA(*block_size, target_)) {
-            auto warp_parts = gemm->policy->ComputeWarpPartition(
-                gemm->M, gemm->N, *block_size, target_, GemmInst::kSQMMA);
-            auto var = gemm->B->data;
-            auto warp_n_expr = IntImm(DataType::Int(32), warp_parts.second);
-            if (warp_n_map_.count(var)) {
-              ICHECK(StructuralEqual()(warp_n_map_[var], warp_n_expr))
-                  << "warp_n mismatch for buffer " << gemm->B->name;
-            } else {
-              warp_n_map_.Set(var, warp_n_expr);
-            }
-            auto sqmma_inst = gemm->SelectSQMMAInstShape(*block_size, target_);
-            if (sqmma_inst.has_value() && !gemm->trans_B) {
-              auto inst_n_expr = IntImm(DataType::Int(32), (*sqmma_inst)[1]);
-              if (sqmma_inst_n_map_.count(var)) {
-                ICHECK(StructuralEqual()(sqmma_inst_n_map_[var], inst_n_expr))
-                    << "sqmma inst_n mismatch for buffer " << gemm->B->name;
-              } else {
-                sqmma_inst_n_map_.Set(var, inst_n_expr);
-              }
-            }
-          }
-        }
       }
 
       // Compute buffer oob for each buffer in the op
@@ -445,6 +422,81 @@ private:
       use_list_[buffer] = {};
     }
     use_list_[buffer].push_back(infer_idx);
+  }
+
+  void SetLayoutKMajorHint(Map<Layout, Bool> &map, const Layout &layout,
+                           Bool k_major) {
+    if (map.count(layout)) {
+      ICHECK(map[layout]->value == k_major->value)
+          << "k_major mismatch for layout " << layout->DebugOutput();
+    } else {
+      map.Set(layout, k_major);
+    }
+  }
+
+  void SetLayoutExprHint(Map<Layout, PrimExpr> &map, const Layout &layout,
+                         const PrimExpr &value, const char *hint_name) {
+    if (map.count(layout)) {
+      ICHECK(StructuralEqual()(map[layout], value))
+          << hint_name << " mismatch for layout " << layout->DebugOutput();
+    } else {
+      map.Set(layout, value);
+    }
+  }
+
+  Optional<Layout> FindLayoutForBuffer(const LayoutMap &layout_map,
+                                       const Buffer &buffer) const {
+    if (layout_map.count(buffer)) {
+      return layout_map[buffer];
+    }
+    for (const auto &[key, layout] : layout_map) {
+      if (key->data.same_as(buffer->data) || key->name == buffer->name) {
+        return layout;
+      }
+    }
+    return Optional<Layout>();
+  }
+
+  void BuildLayoutHintsFromInferList(const LayoutMap &layout_map,
+                                     Map<Layout, Bool> &k_major_map,
+                                     Map<Layout, PrimExpr> &warp_n_map,
+                                     Map<Layout, PrimExpr> &sqmma_inst_n_map) {
+    if (!TargetIsPH1(target_)) {
+      return;
+    }
+    ICHECK_EQ(infer_list_.size(), thread_bounds_vec_.size())
+        << "infer_list_ and thread_bounds_vec_ size mismatch";
+    for (size_t i = 0; i < infer_list_.size(); ++i) {
+      const auto &infer = infer_list_[i];
+      if (const auto *gemm = infer.as<GemmNode>()) {
+        auto a_layout = FindLayoutForBuffer(layout_map, gemm->A);
+        auto b_layout = FindLayoutForBuffer(layout_map, gemm->B);
+        if (a_layout.has_value()) {
+          SetLayoutKMajorHint(k_major_map, a_layout.value(),
+                              Bool(!gemm->trans_A));
+        }
+        if (b_layout.has_value()) {
+          SetLayoutKMajorHint(k_major_map, b_layout.value(),
+                              Bool(gemm->trans_B));
+        }
+        auto block_size = as_const_int(thread_bounds_vec_[i]->extent);
+        if (block_size == nullptr || !b_layout.has_value() ||
+            !gemm->AllowSQMMA(*block_size, target_)) {
+          continue;
+        }
+        auto warp_parts = gemm->policy->ComputeWarpPartition(
+            gemm->M, gemm->N, *block_size, target_, GemmInst::kSQMMA);
+        SetLayoutExprHint(warp_n_map, b_layout.value(),
+                          IntImm(DataType::Int(32), warp_parts.second),
+                          "warp_n");
+        auto sqmma_inst = gemm->SelectSQMMAInstShape(*block_size, target_);
+        if (sqmma_inst.has_value() && !gemm->trans_B) {
+          SetLayoutExprHint(sqmma_inst_n_map, b_layout.value(),
+                            IntImm(DataType::Int(32), (*sqmma_inst)[1]),
+                            "sqmma inst_n");
+        }
+      }
+    }
   }
 
   void VisitStmt_(const ForNode *op) final {
@@ -517,8 +569,6 @@ private:
   std::vector<bool> buffer_oob_vec_;
   Target target_;
   LayoutMap annotated_layout_map_;
-  Map<Var, PrimExpr> warp_n_map_;
-  Map<Var, PrimExpr> sqmma_inst_n_map_;
   bool skip_thread_partition_{false};
 
   std::vector<TileOperator> BackupInferList() {
@@ -702,6 +752,7 @@ private:
     }
     auto block_ptr = block.CopyOnWrite();
     block_ptr->annotations.Set(attr::kLayoutMap, result_.layout_map);
+    block_ptr->annotations.Set(attr::kKMajorMap, result_.k_major_map);
     block_ptr->annotations.Set(attr::kWarpNMap, result_.warp_n_map);
     block_ptr->annotations.Set(attr::kSqmmaInstNMap, result_.sqmma_inst_n_map);
     return block;
