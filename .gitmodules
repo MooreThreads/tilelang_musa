@@ -1,6 +1,6 @@
 [submodule "3rdparty/tvm"]
 	path = 3rdparty/tvm
-    url = git@sh-code.mthreads.com:sw/tvm_musa.git
+    url = https://github.com/MooreThreads/tvm_musa
 [submodule "3rdparty/mutlass"]
 	path = 3rdparty/mutlass
-	url = git@sh-code.mthreads.com:sw/mutlass.git
+	url = https://github.com/MooreThreads/mutlass
