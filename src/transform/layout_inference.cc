@@ -11,7 +11,9 @@
 #include <tvm/tir/transform.h>
 #include <tvm/tir/utils.h>
 
+#include <algorithm>
 #include <queue>
+#include <string>
 
 #include "../layout/utils.h"
 #include "../op/copy.h"
@@ -110,6 +112,7 @@ public:
            "required for layout inference.";
 
     // Run InferLayout
+    AdvanceManualLayoutSteps(cur_infer_id, layout_map);
     DLOG(INFO) << "[RunInferStep] working on " << cur_infer_id << '\n';
     auto updates =
         next->InferLayout(LayoutInferArgs{target_, thread_bounds, layout_map,
@@ -123,6 +126,19 @@ public:
       // Basic validity checks
       ICHECK(buffer.defined()) << "InferLayout returned an undefined buffer.";
       ICHECK(layout.defined()) << "InferLayout returned an undefined layout.";
+
+      if (active_manual_layouts_.count(buffer)) {
+        Layout expected = active_manual_layouts_[buffer];
+        if (!layout_map.count(buffer)) {
+          layout_map.Set(buffer, expected);
+        }
+        ICHECK(layout->IsEqual(expected.get()))
+            << "Layout conflict under allow_reannotation for buffer " << buffer
+            << ". Inferred layout: " << layout->DebugOutput()
+            << ", expected layout in current reannotation interval: "
+            << expected->DebugOutput();
+        continue;
+      }
 
       if (layout_map.count(buffer)) {
         // If new layout contains the old one, update map
@@ -218,6 +234,28 @@ public:
     }
   };
 
+  void AdvanceManualLayoutSteps(int cur_infer_id, LayoutMap &layout_map) {
+    while (next_manual_layout_step_idx_ < manual_layout_steps_.size()) {
+      const auto &[step, step_layouts] =
+          manual_layout_steps_[next_manual_layout_step_idx_];
+      int apply_at = 0;
+      if (layout_override_step_to_infer_idx_.count(step)) {
+        apply_at = layout_override_step_to_infer_idx_[step];
+      }
+      if (apply_at > cur_infer_id) {
+        break;
+      }
+      for (const auto &[buffer, layout] : step_layouts) {
+        if (!pre_manual_layout_map_.count(buffer) && layout_map.count(buffer)) {
+          pre_manual_layout_map_.Set(buffer, layout_map[buffer]);
+        }
+        active_manual_layouts_.Set(buffer, layout);
+        layout_map.Set(buffer, layout);
+      }
+      ++next_manual_layout_step_idx_;
+    }
+  }
+
   LayoutInferenceResult Run() {
     // Basic consistency check: infer_list_ and thread_var_vec_ should have the
     // same size
@@ -240,6 +278,11 @@ public:
     // anything else relevant to your setup.
 
     // Copy the annotated layout map to local variable
+    std::sort(manual_layout_steps_.begin(), manual_layout_steps_.end(),
+              [](const auto &a, const auto &b) { return a.first < b.first; });
+    next_manual_layout_step_idx_ = 0;
+    active_manual_layouts_ = LayoutMap();
+    pre_manual_layout_map_ = LayoutMap();
     Map<Buffer, Layout> layout_map = annotated_layout_map_;
     Map<Buffer, Layout> strict_layout_map;
     int num_infer = infer_list_.size();
@@ -276,6 +319,12 @@ public:
 
     // step 3: relax constraints to free and re-run
     InferInFreeMode(layout_map, strict_layout_map);
+
+    // Keep the entry layout for buffers that are re-annotated later, so code
+    // before the first marker still follows auto-inferred layout.
+    for (const auto &[buffer, layout] : pre_manual_layout_map_) {
+      layout_map.Set(buffer, layout);
+    }
 
     // Check that all local.fragment buffers have inferred layouts
     for (const auto &[buffer, _] : use_list_) {
@@ -339,6 +388,17 @@ private:
     // Do not analysis the call node to the global function.
     if (op->op.as<GlobalVarNode>())
       return;
+    if (const auto *op_node = op->op.as<OpNode>()) {
+      if (op_node->name == "tl.layout_marker") {
+        ICHECK_EQ(op->args.size(), 1U)
+            << "tl.layout_marker expects one integer step argument";
+        auto step_imm = op->args[0].as<IntImmNode>();
+        ICHECK(step_imm) << "tl.layout_marker step must be IntImm";
+        layout_override_step_to_infer_idx_[step_imm->value] =
+            static_cast<int>(infer_list_.size());
+        return;
+      }
+    }
 
     auto p = ParseOperator(tvm::ffi::GetRef<Call>(op), buffer_data_to_buffer_);
     if (p.defined()) {
@@ -466,11 +526,32 @@ private:
     }
     ICHECK_EQ(infer_list_.size(), thread_bounds_vec_.size())
         << "infer_list_ and thread_bounds_vec_ size mismatch";
+    LayoutMap active_layout_map = layout_map;
+    size_t next_manual_step_idx = 0;
+    auto advance_manual_steps = [&](int cur_infer_id) {
+      while (next_manual_step_idx < manual_layout_steps_.size()) {
+        const auto &[step, step_layouts] =
+            manual_layout_steps_[next_manual_step_idx];
+        int apply_at = 0;
+        if (layout_override_step_to_infer_idx_.count(step)) {
+          apply_at = layout_override_step_to_infer_idx_[step];
+        }
+        if (apply_at > cur_infer_id) {
+          break;
+        }
+        for (const auto &[buffer, layout] : step_layouts) {
+          active_layout_map.Set(buffer, layout);
+        }
+        ++next_manual_step_idx;
+      }
+    };
+
     for (size_t i = 0; i < infer_list_.size(); ++i) {
+      advance_manual_steps(static_cast<int>(i));
       const auto &infer = infer_list_[i];
       if (const auto *gemm = infer.as<GemmNode>()) {
-        auto a_layout = FindLayoutForBuffer(layout_map, gemm->A);
-        auto b_layout = FindLayoutForBuffer(layout_map, gemm->B);
+        auto a_layout = FindLayoutForBuffer(active_layout_map, gemm->A);
+        auto b_layout = FindLayoutForBuffer(active_layout_map, gemm->B);
         if (a_layout.has_value()) {
           SetLayoutKMajorHint(k_major_map, a_layout.value(),
                               Bool(!gemm->trans_A));
@@ -541,6 +622,32 @@ private:
         annotated_layout_map_.Set(buffer, layout);
       }
     }
+    if (op->annotations.count("layout_override_seq")) {
+      auto seq_map_opt = op->annotations.Get("layout_override_seq")
+                             ->as<Map<tvm::ffi::String, Map<Var, Layout>>>();
+      if (seq_map_opt.has_value()) {
+        std::vector<std::pair<int64_t, Map<Var, Layout>>> seq_items;
+        seq_items.reserve(seq_map_opt.value().size());
+        for (const auto &[step_str, step_layouts] : seq_map_opt.value()) {
+          int64_t step = std::stoll(std::string(step_str));
+          seq_items.push_back({step, step_layouts});
+        }
+        std::sort(
+            seq_items.begin(), seq_items.end(),
+            [](const auto &a, const auto &b) { return a.first < b.first; });
+        for (const auto &[step, step_layouts] : seq_items) {
+          LayoutMap resolved_step_layouts;
+          for (const auto &[var, layout] : step_layouts) {
+            ICHECK(buffer_data_to_buffer_.count(var))
+                << "buffer " << var << " is not found in the block";
+            auto buffer = buffer_data_to_buffer_[var];
+            ICHECK(StructuralEqual()(layout->InputShape(), buffer->shape));
+            resolved_step_layouts.Set(buffer, layout);
+          }
+          manual_layout_steps_.push_back({step, resolved_step_layouts});
+        }
+      }
+    }
     IRVisitorWithAnalyzer::VisitStmt_(op);
   }
 
@@ -569,6 +676,18 @@ private:
   std::vector<bool> buffer_oob_vec_;
   Target target_;
   LayoutMap annotated_layout_map_;
+  // stores all step -> layout_map mappings
+  std::vector<std::pair<int64_t, LayoutMap>> manual_layout_steps_;
+  // stores all step -> infer_idx mappings
+  // infer_idx is the position of layout_marker in the operator sequence
+  std::unordered_map<int64_t, int> layout_override_step_to_infer_idx_;
+  // stores the re-annotated layouts that are already active at the
+  // cur_infer_id stage and must be enforced
+  LayoutMap active_manual_layouts_;
+  // represents each buffer's layout before its first re-annotation
+  LayoutMap pre_manual_layout_map_;
+  // points to the next unapplied step in manual_layout_steps_
+  size_t next_manual_layout_step_idx_{0};
   bool skip_thread_partition_{false};
 
   std::vector<TileOperator> BackupInferList() {

@@ -3,6 +3,7 @@
  * \brief Lower the tile op for further codegen.
  */
 
+#include <string>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
@@ -349,6 +350,23 @@ private:
         layout_map_.Set(buffer, layout);
       }
     }
+    if (op->annotations.count("layout_override_seq")) {
+      auto seq_map_opt = op->annotations.Get("layout_override_seq")
+                             ->as<Map<tvm::ffi::String, Map<Var, Layout>>>();
+      if (seq_map_opt.has_value()) {
+        for (const auto &[step_str, step_layouts] : seq_map_opt.value()) {
+          int64_t step = std::stoll(std::string(step_str));
+          LayoutMap resolved_step_layouts;
+          for (const auto &[var, layout] : step_layouts) {
+            if (!buffer_data_to_buffer_.count(var)) {
+              continue;
+            }
+            resolved_step_layouts.Set(buffer_data_to_buffer_[var], layout);
+          }
+          layout_override_steps_[step] = resolved_step_layouts;
+        }
+      }
+    }
     if (op->annotations.count(attr::kKMajorMap)) {
       auto k_major_map =
           op->annotations.at(attr::kKMajorMap).as<Map<Layout, Bool>>().value();
@@ -378,6 +396,7 @@ private:
 
     auto block = Downcast<Block>(arith::IRMutatorWithAnalyzer::VisitStmt_(op));
     auto block_ptr = block.CopyOnWrite();
+    block_ptr->annotations.erase("layout_override_seq");
     for (size_t i = 0; i < block->alloc_buffers.size(); i++) {
       auto buffer = block->alloc_buffers[i];
       if (buffer_remap_.count(buffer)) {
@@ -730,6 +749,23 @@ private:
     // Do not analysis the call node to the global function.
     if (call && call->op.as<GlobalVarNode>())
       return Downcast<Evaluate>(IRMutatorWithAnalyzer::VisitStmt_(op));
+    if (call && call->op.same_as(tl::layout_marker())) {
+      ICHECK_EQ(call->args.size(), 1U)
+          << "tl.layout_marker expects one integer step argument";
+      const auto *step_imm = call->args[0].as<IntImmNode>();
+      ICHECK(step_imm) << "tl.layout_marker step must be IntImm";
+      int64_t step = step_imm->value;
+      if (layout_override_steps_.count(step)) {
+        auto step_layouts = layout_override_steps_[step];
+        for (const auto &[buffer, layout] : step_layouts) {
+          layout_map_.Set(buffer, layout);
+          if (buffer_remap_.count(buffer)) {
+            layout_map_.Set(buffer_remap_[buffer], layout);
+          }
+        }
+      }
+      return Evaluate(IntImm(DataType::Int(32), 0));
+    }
 
     auto tile_op =
         ParseOperator(tvm::ffi::GetRef<Stmt>(op), buffer_data_to_buffer_);
@@ -823,6 +859,8 @@ private:
   Map<Layout, Bool> layout_k_major_;
   Map<Layout, PrimExpr> layout_sqmma_inst_n_;
   Map<Layout, PrimExpr> layout_warp_n_;
+  // stores all step -> layout_map mappings
+  std::unordered_map<int64_t, LayoutMap> layout_override_steps_;
 };
 
 namespace transform {

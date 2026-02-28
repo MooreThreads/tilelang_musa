@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from typing import Callable
+import threading
 
+from tilelang import tvm
 from tilelang.layout import Layout
-from tvm.script.parser.tir import attr, block_attr
+from tvm.script.parser.tir import attr, block_attr, evaluate
 
 __all__ = [
     "use_swizzle",
@@ -12,6 +14,16 @@ __all__ = [
     "annotate_safe_value",
     "annotate_l2_hit_ratio",
 ]
+
+_tls = threading.local()
+
+
+def _next_layout_override_step() -> int:
+    if not hasattr(_tls, "layout_override_step"):
+        _tls.layout_override_step = 0
+    step = _tls.layout_override_step
+    _tls.layout_override_step += 1
+    return step
 
 
 def use_swizzle(panel_size: int, order: str = "row", enable: bool = True):
@@ -22,8 +34,18 @@ def use_swizzle(panel_size: int, order: str = "row", enable: bool = True):
     return attr(None, "threadblock_swizzle_pattern", f"tl::{device_func}<{panel_size}>")
 
 
-def annotate_layout(layout_map: dict):
-    """Annotate the layout of the buffer."""
+def annotate_layout(layout_map: dict, allow_reannotation: bool = False):
+    """Annotate the layout of the buffer.
+
+    Parameters
+    ----------
+    layout_map : dict
+        Buffer-to-layout map.
+    allow_reannotation : bool
+        If False (default), keep original block-level semantics.
+        If True, record an ordered manual-layout declaration that can update
+        a buffer layout in later statements.
+    """
     _layout_map = {}
     for buffer, layout in layout_map.items():
         if isinstance(layout, Layout):
@@ -33,7 +55,14 @@ def annotate_layout(layout_map: dict):
         else:
             raise ValueError(f"Invalid layout: {layout}")
 
-    return block_attr({"layout_map": _layout_map})
+    if not allow_reannotation:
+        return block_attr({"layout_map": _layout_map})
+
+    step = _next_layout_override_step()
+    block_attr({"layout_override_seq": {str(step): _layout_map}})
+    marker_op = tvm.ir.Op.get("tl.layout_marker")
+    evaluate(tvm.tir.Call("int32", marker_op, [tvm.tir.IntImm("int32", step)]))
+    return None
 
 
 def annotate_safe_value(safe_value_map: dict):
