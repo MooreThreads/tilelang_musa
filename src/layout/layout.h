@@ -213,9 +213,11 @@ Layout makeQuarterBankSwizzleLayout(int stride, int continuous,
 namespace attr {
 // BlockAttr, Containing the layout for all the buffers in the block
 constexpr const char *kLayoutMap = "layout_map";
-// BlockAttr, Containing warp_n info for gemm-related buffers in the block
+// BlockAttr, Containing k-major info for gemm-related layouts in the block
+constexpr const char *kKMajorMap = "k_major_map";
+// BlockAttr, Containing warp_n info for gemm-related layouts in the block
 constexpr const char *kWarpNMap = "warp_n_map";
-// BlockAttr, Containing sqmma inst_n info for gemm-related buffers in the block
+// BlockAttr, Containing sqmma inst_n info for gemm-related layouts in the block
 constexpr const char *kSqmmaInstNMap = "sqmma_inst_n_map";
 } // namespace attr
 

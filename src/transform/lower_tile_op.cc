@@ -110,7 +110,6 @@ public:
 
   void Clear() {
     buffer_var_gemm_.clear();
-    buffer_var_k_major_.clear();
     buffer_var_sqmma_.clear();
     in_sqmma_context_ = false;
   }
@@ -118,7 +117,6 @@ public:
   void Collect(const Stmt &stmt) { VisitStmt(stmt); }
 
   Array<Var> GetBufferVarGemm() { return buffer_var_gemm_; }
-  Map<Var, Bool> GetBufferVarKMajor() { return buffer_var_k_major_; }
   Map<Var, Bool> GetBufferVarSQMMA() { return buffer_var_sqmma_; }
 
 private:
@@ -152,13 +150,9 @@ private:
       auto dst_buffer_access_ptr = Downcast<Call>(call->args[2]);
       ICHECK(dst_buffer_access_ptr->op.same_as(builtin::tvm_access_ptr()));
       auto dst_buffer_var = Downcast<Var>(dst_buffer_access_ptr->args[1]);
-      bool trans_a = call->args[3].as<Bool>().value();
-      bool trans_b = call->args[4].as<Bool>().value();
       buffer_var_gemm_.push_back(srcA_buffer_var);
       buffer_var_gemm_.push_back(srcB_buffer_var);
       buffer_var_gemm_.push_back(dst_buffer_var);
-      buffer_var_k_major_.Set(srcA_buffer_var, Bool(!trans_a));
-      buffer_var_k_major_.Set(srcB_buffer_var, Bool(trans_b));
       if (in_sqmma_context_) {
         buffer_var_sqmma_.Set(srcA_buffer_var, Bool(true));
         buffer_var_sqmma_.Set(srcB_buffer_var, Bool(true));
@@ -173,13 +167,9 @@ private:
       auto dst_buffer_access_ptr = Downcast<Call>(call->args[2]);
       ICHECK(dst_buffer_access_ptr->op.same_as(builtin::tvm_access_ptr()));
       auto dst_buffer_var = Downcast<Var>(dst_buffer_access_ptr->args[1]);
-      bool trans_a = call->args[4].as<Bool>().value();
-      bool trans_b = call->args[5].as<Bool>().value();
       buffer_var_gemm_.push_back(srcA_buffer_var);
       buffer_var_gemm_.push_back(srcB_buffer_var);
       buffer_var_gemm_.push_back(dst_buffer_var);
-      buffer_var_k_major_.Set(srcA_buffer_var, Bool(!trans_a));
-      buffer_var_k_major_.Set(srcB_buffer_var, Bool(trans_b));
       if (in_sqmma_context_) {
         buffer_var_sqmma_.Set(srcA_buffer_var, Bool(true));
         buffer_var_sqmma_.Set(srcB_buffer_var, Bool(true));
@@ -188,7 +178,6 @@ private:
   }
 
   Array<Var> buffer_var_gemm_;
-  Map<Var, Bool> buffer_var_k_major_;
   Map<Var, Bool> buffer_var_sqmma_;
   bool in_sqmma_context_{false};
 };
@@ -298,7 +287,6 @@ public:
     BufferGemmCollector collector;
     collector.Collect(f->body);
     substituter.buffer_var_gemm_ = collector.GetBufferVarGemm();
-    substituter.buffer_var_k_major_ = collector.GetBufferVarKMajor();
     substituter.buffer_var_sqmma_ = collector.GetBufferVarSQMMA();
     PrimFuncNode *fptr = f.CopyOnWrite();
     fptr->body = substituter.VisitStmt(f->body);
@@ -321,6 +309,25 @@ public:
 private:
   using arith::IRMutatorWithAnalyzer::IRMutatorWithAnalyzer;
 
+  void SetLayoutKMajor(const Layout &layout, Bool k_major) {
+    if (layout_k_major_.count(layout)) {
+      ICHECK(layout_k_major_[layout]->value == k_major->value)
+          << "k_major mismatch for layout " << layout->DebugOutput();
+    } else {
+      layout_k_major_.Set(layout, k_major);
+    }
+  }
+
+  void SetLayoutExprHint(Map<Layout, PrimExpr> *dst, const Layout &layout,
+                         PrimExpr value, const char *hint_name) {
+    if (dst->count(layout)) {
+      ICHECK(StructuralEqual()((*dst)[layout], value))
+          << hint_name << " mismatch for layout " << layout->DebugOutput();
+    } else {
+      dst->Set(layout, value);
+    }
+  }
+
   Stmt VisitStmt_(const BlockNode *op) final {
     // Record the mapping from buffer data var to buffer for later lookup
     for (auto buffer : op->alloc_buffers) {
@@ -332,7 +339,6 @@ private:
     for (auto buffer : op->alloc_buffers) {
       buffer_data_to_buffer_.Set(buffer->data, buffer);
     }
-    Map<Var, Layout> vmap;
     if (op->annotations.count(attr::kLayoutMap)) {
       auto layout_map = op->annotations.at(attr::kLayoutMap)
                             .as<Map<Buffer, Layout>>()
@@ -343,35 +349,28 @@ private:
         layout_map_.Set(buffer, layout);
       }
     }
+    if (op->annotations.count(attr::kKMajorMap)) {
+      auto k_major_map =
+          op->annotations.at(attr::kKMajorMap).as<Map<Layout, Bool>>().value();
+      for (const auto &[layout, k_major] : k_major_map) {
+        SetLayoutKMajor(layout, k_major);
+      }
+    }
     if (op->annotations.count(attr::kWarpNMap)) {
-      auto warp_n_map =
-          op->annotations.at(attr::kWarpNMap).as<Map<Var, PrimExpr>>().value();
-      for (const auto &[var, warp_n] : warp_n_map) {
-        if (buffer_var_warp_n_.count(var)) {
-          ICHECK(StructuralEqual()(buffer_var_warp_n_[var], warp_n))
-              << "warp_n mismatch for buffer " << var->name_hint;
-        } else {
-          buffer_var_warp_n_.Set(var, warp_n);
-        }
+      auto warp_n_map = op->annotations.at(attr::kWarpNMap)
+                            .as<Map<Layout, PrimExpr>>()
+                            .value();
+      for (const auto &[layout, warp_n] : warp_n_map) {
+        SetLayoutExprHint(&layout_warp_n_, layout, warp_n, "warp_n");
       }
     }
     if (op->annotations.count(attr::kSqmmaInstNMap)) {
       auto inst_n_map = op->annotations.at(attr::kSqmmaInstNMap)
-                            .as<Map<Var, PrimExpr>>()
+                            .as<Map<Layout, PrimExpr>>()
                             .value();
-      for (const auto &[var, inst_n] : inst_n_map) {
-        if (buffer_var_sqmma_inst_n_.count(var)) {
-          ICHECK(StructuralEqual()(buffer_var_sqmma_inst_n_[var], inst_n))
-              << "sqmma inst_n mismatch for buffer " << var->name_hint;
-        } else {
-          buffer_var_sqmma_inst_n_.Set(var, inst_n);
-        }
-        if (buffer_var_sqmma_.count(var)) {
-          ICHECK(buffer_var_sqmma_[var] == true)
-              << "sqmma buffer mismatch for buffer " << var->name_hint;
-        } else {
-          buffer_var_sqmma_.Set(var, Bool(true));
-        }
+      for (const auto &[layout, inst_n] : inst_n_map) {
+        SetLayoutExprHint(&layout_sqmma_inst_n_, layout, inst_n,
+                          "sqmma inst_n");
       }
     }
     // Begin a new workspace collection frame for this block scope
@@ -779,8 +778,8 @@ private:
     auto lowered = tile_op->Lower(
         LowerArgs{target_, thread_bounds, thread_var_->var, callback,
                   barrier_callback, layout_map_, buffer_remap_,
-                  buffer_var_gemm_, buffer_var_k_major_, buffer_var_sqmma_,
-                  buffer_var_sqmma_inst_n_, buffer_var_warp_n_},
+                  buffer_var_gemm_, buffer_var_sqmma_, layout_k_major_,
+                  layout_sqmma_inst_n_, layout_warp_n_},
         analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }
@@ -820,10 +819,10 @@ private:
   Map<Var, Var> var_remap_;
   bool has_tma_{false};
   Array<Var> buffer_var_gemm_;
-  Map<Var, Bool> buffer_var_k_major_;
   Map<Var, Bool> buffer_var_sqmma_;
-  Map<Var, PrimExpr> buffer_var_sqmma_inst_n_;
-  Map<Var, PrimExpr> buffer_var_warp_n_;
+  Map<Layout, Bool> layout_k_major_;
+  Map<Layout, PrimExpr> layout_sqmma_inst_n_;
+  Map<Layout, PrimExpr> layout_warp_n_;
 };
 
 namespace transform {
