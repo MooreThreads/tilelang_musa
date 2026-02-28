@@ -394,9 +394,11 @@ void TileLangStorageAccessVisitor::VisitExpr_(const CallNode *op) {
           Array<PrimExpr> indices;
           PrimExpr remaining = std::move(offset);
           for (size_t i = 0; i < shape.size(); ++i) {
-            PrimExpr stride = make_const(DataType::Int(32), 1);
+            // Use remaining.dtype() so stride matches offset dtype (may be
+            // int64 when tl.config_index_bitwidth=64 is enabled).
+            PrimExpr stride = make_const(remaining.dtype(), 1);
             for (size_t j = i + 1; j < shape.size(); ++j) {
-              stride = stride * shape[j];
+              stride = stride * cast(remaining.dtype(), shape[j]);
             }
             PrimExpr idx = FloorDiv(remaining, stride);
             remaining = FloorMod(remaining, stride);

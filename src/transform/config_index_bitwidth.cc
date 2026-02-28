@@ -49,6 +49,27 @@ protected:
     return Parent::VisitExpr_(op);
   }
 
+  // Fix: bitwise builtins (bitwise_xor, right_shift, bitwise_and, etc.) are
+  // represented as CallNode in TVM TIR. StmtExprMutator::VisitExpr_(CallNode)
+  // visits args but keeps the original return dtype unchanged. When
+  // LayoutInference injects swizzle expressions (e.g. bitwise_xor(a, b)) into
+  // LetStmt values and ConfigIndexBitwidth promotes the bound var to int64, the
+  // ICHECK(value.dtype() == var.dtype()) in IndexDataTypeRewriter::VisitStmt_
+  // (LetStmtNode) fails because the Call still returns int32 while the var is
+  // now int64. Override VisitExpr_(CallNode) to also promote the return type.
+  PrimExpr VisitExpr_(const CallNode *op) final {
+    if (is_enabled_ && op->dtype.is_int() &&
+        op->dtype.bits() < _index_bitwidth_) {
+      Array<PrimExpr> new_args;
+      new_args.reserve(op->args.size());
+      for (const auto &arg : op->args) {
+        new_args.push_back(VisitExpr(arg));
+      }
+      return Call(DataType::Int(_index_bitwidth_), op->op, new_args, op->span);
+    }
+    return Parent::VisitExpr_(op);
+  }
+
   Stmt VisitStmt_(const BufferStoreNode *op) final {
     // Force indices to be int64
     bool is_enabled = is_enabled_;
