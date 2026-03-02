@@ -64,6 +64,7 @@ struct LayoutInferenceResult {
   Map<For, Fragment> for_map;
   Map<For, PrimExpr> predicate_map;
   Map<Layout, Bool> k_major_map;
+  Map<Layout, Bool> sqmma_map;
   Map<Layout, PrimExpr> warp_n_map;
   Map<Layout, PrimExpr> sqmma_inst_n_map;
 };
@@ -363,12 +364,13 @@ public:
       }
     }
     Map<Layout, Bool> k_major_map;
+    Map<Layout, Bool> sqmma_map;
     Map<Layout, PrimExpr> warp_n_map;
     Map<Layout, PrimExpr> sqmma_inst_n_map;
-    BuildLayoutHintsFromInferList(layout_map, k_major_map, warp_n_map,
-                                  sqmma_inst_n_map);
-    return {layout_map,  for_map,    predicate_map,
-            k_major_map, warp_n_map, sqmma_inst_n_map};
+    BuildLayoutHintsFromInferList(layout_map, k_major_map, sqmma_map,
+                                  warp_n_map, sqmma_inst_n_map);
+    return {layout_map, for_map,    predicate_map,   k_major_map,
+            sqmma_map,  warp_n_map, sqmma_inst_n_map};
   }
 
   void Collect(const PrimFunc &f) {
@@ -484,13 +486,13 @@ private:
     use_list_[buffer].push_back(infer_idx);
   }
 
-  void SetLayoutKMajorHint(Map<Layout, Bool> &map, const Layout &layout,
-                           Bool k_major) {
+  void SetLayoutBoolHint(Map<Layout, Bool> &map, const Layout &layout,
+                         Bool value, const char *hint_name) {
     if (map.count(layout)) {
-      ICHECK(map[layout]->value == k_major->value)
-          << "k_major mismatch for layout " << layout->DebugOutput();
+      ICHECK(map[layout]->value == value->value)
+          << hint_name << " mismatch for layout " << layout->DebugOutput();
     } else {
-      map.Set(layout, k_major);
+      map.Set(layout, value);
     }
   }
 
@@ -519,6 +521,7 @@ private:
 
   void BuildLayoutHintsFromInferList(const LayoutMap &layout_map,
                                      Map<Layout, Bool> &k_major_map,
+                                     Map<Layout, Bool> &sqmma_map,
                                      Map<Layout, PrimExpr> &warp_n_map,
                                      Map<Layout, PrimExpr> &sqmma_inst_n_map) {
     if (!TargetIsPH1(target_)) {
@@ -553,16 +556,24 @@ private:
         auto a_layout = FindLayoutForBuffer(active_layout_map, gemm->A);
         auto b_layout = FindLayoutForBuffer(active_layout_map, gemm->B);
         if (a_layout.has_value()) {
-          SetLayoutKMajorHint(k_major_map, a_layout.value(),
-                              Bool(!gemm->trans_A));
+          SetLayoutBoolHint(k_major_map, a_layout.value(), Bool(!gemm->trans_A),
+                            "k_major");
         }
         if (b_layout.has_value()) {
-          SetLayoutKMajorHint(k_major_map, b_layout.value(),
-                              Bool(gemm->trans_B));
+          SetLayoutBoolHint(k_major_map, b_layout.value(), Bool(gemm->trans_B),
+                            "k_major");
         }
         auto block_size = as_const_int(thread_bounds_vec_[i]->extent);
-        if (block_size == nullptr || !b_layout.has_value() ||
-            !gemm->AllowSQMMA(*block_size, target_)) {
+        if (block_size == nullptr || !gemm->AllowSQMMA(*block_size, target_)) {
+          continue;
+        }
+        if (a_layout.has_value()) {
+          SetLayoutBoolHint(sqmma_map, a_layout.value(), Bool(true), "sqmma");
+        }
+        if (b_layout.has_value()) {
+          SetLayoutBoolHint(sqmma_map, b_layout.value(), Bool(true), "sqmma");
+        }
+        if (!b_layout.has_value()) {
           continue;
         }
         auto warp_parts = gemm->policy->ComputeWarpPartition(
@@ -872,6 +883,7 @@ private:
     auto block_ptr = block.CopyOnWrite();
     block_ptr->annotations.Set(attr::kLayoutMap, result_.layout_map);
     block_ptr->annotations.Set(attr::kKMajorMap, result_.k_major_map);
+    block_ptr->annotations.Set(attr::kSqmmaMap, result_.sqmma_map);
     block_ptr->annotations.Set(attr::kWarpNMap, result_.warp_n_map);
     block_ptr->annotations.Set(attr::kSqmmaInstNMap, result_.sqmma_inst_n_map);
     return block;

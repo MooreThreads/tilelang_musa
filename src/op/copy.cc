@@ -206,6 +206,18 @@ static Optional<bool> GetLayoutKMajor(const LowerArgs &T, const Buffer &buf) {
   return Optional<bool>();
 }
 
+static Optional<bool> GetLayoutSQMMA(const LowerArgs &T, const Buffer &buf) {
+  auto layout = GetActiveLayout(T, buf);
+  if (!layout.defined()) {
+    return Optional<bool>();
+  }
+  auto is_sqmma = GetLayoutHintByKey(T.layout_sqmma, layout.value());
+  if (is_sqmma.has_value()) {
+    return Optional<bool>(is_sqmma.value()->value);
+  }
+  return Optional<bool>();
+}
+
 static Optional<int> GetLayoutSqmmaInstN(const LowerArgs &T,
                                          const Buffer &buf) {
   auto layout = GetActiveLayout(T, buf);
@@ -1027,11 +1039,12 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
   };
 
   auto dst_k_major_opt = GetLayoutKMajor(T, dst);
+  auto dst_sqmma_opt = GetLayoutSQMMA(T, dst);
   bool is_musa_sqmma_norm_copy =
       TargetIsMusa(T.target) && src.scope() == "global" &&
       (dst.scope() == "shared" || dst.scope() == "shared.dyn") &&
       !src_range.empty() && !dst_range.empty() && dst_k_major_opt.has_value() &&
-      T.buffer_var_sqmma.count(dst->data);
+      dst_sqmma_opt.value_or(false);
   bool dst_is_k_major = dst_k_major_opt.value_or(true);
 
   bool need_sqmma_split = false;
