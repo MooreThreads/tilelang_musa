@@ -34,7 +34,9 @@ def use_swizzle(panel_size: int, order: str = "row", enable: bool = True):
     return attr(None, "threadblock_swizzle_pattern", f"tl::{device_func}<{panel_size}>")
 
 
-def annotate_layout(layout_map: dict, allow_reannotation: bool = False):
+def annotate_layout(layout_map: dict,
+                    allow_reannotation: bool = False,
+                    allow_buffer_region: bool = False):
     """Annotate the layout of the buffer.
 
     Parameters
@@ -45,13 +47,28 @@ def annotate_layout(layout_map: dict, allow_reannotation: bool = False):
         If False (default), keep original block-level semantics.
         If True, record an ordered manual-layout declaration that can update
         a buffer layout in later statements.
+    allow_buffer_region : bool
+        If False (default), reject BufferRegion keys.
+        If True, allow BufferRegion keys and map them to their underlying buffer.
     """
     _layout_map = {}
     for buffer, layout in layout_map.items():
+        if isinstance(buffer, tvm.tir.Buffer):
+            buffer_data = buffer.data
+            target_shape = buffer.shape
+        elif isinstance(buffer, tvm.tir.BufferRegion):
+            if not allow_buffer_region:
+                raise ValueError("BufferRegion is not allowed in annotate_layout unless "
+                                 "allow_buffer_region=True")
+            buffer_data = buffer.buffer.data
+            target_shape = buffer.buffer.shape
+        else:
+            raise ValueError(f"Invalid annotate_layout key type: {type(buffer)}")
+
         if isinstance(layout, Layout):
-            _layout_map[buffer.data] = layout
+            _layout_map[buffer_data] = layout
         elif isinstance(layout, Callable):
-            _layout_map[buffer.data] = Layout(buffer.shape, layout)
+            _layout_map[buffer_data] = Layout(target_shape, layout)
         else:
             raise ValueError(f"Invalid layout: {layout}")
 

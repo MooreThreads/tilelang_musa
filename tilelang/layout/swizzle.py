@@ -3,6 +3,7 @@
 
 import tvm
 from tilelang import _ffi_api
+from .layout import Layout
 
 
 # Use a stable swizzled layout to ensure consistent memory access patterns.
@@ -49,16 +50,54 @@ def make_wgmma_swizzled_layout(buffer: tvm.tir.Buffer,
 def make_sqmma_swizzled_layout(buffer: tvm.tir.Buffer,
                                continuity: int = None,
                                k_major: bool = True):
-    assert len(buffer.shape) == 2
-    if continuity is None:
-        continuity = int(buffer.shape[1])
-    return _ffi_api.make_sqmma_swizzled_layout(
-        int(buffer.shape[0]),
-        int(buffer.shape[1]),
-        continuity,
-        int(tvm.DataType(buffer.dtype).bits),
-        k_major,
-    )
+    if isinstance(buffer, tvm.tir.Buffer):
+        assert len(buffer.shape) == 2
+        if continuity is None:
+            continuity = int(buffer.shape[1])
+        return _ffi_api.make_sqmma_swizzled_layout(
+            int(buffer.shape[0]),
+            int(buffer.shape[1]),
+            continuity,
+            int(tvm.DataType(buffer.dtype).bits),
+            k_major,
+        )
+
+    if isinstance(buffer, tvm.tir.BufferRegion):
+        region_shape = [r.extent for r in buffer.region]
+        if len(region_shape) < 2:
+            raise ValueError("make_sqmma_swizzled_layout requires at least 2D region, "
+                             f"got shape={region_shape}")
+        if len(region_shape) > 2 and any(int(dim) != 1 for dim in region_shape[:-2]):
+            raise ValueError("make_sqmma_swizzled_layout only supports BufferRegion with leading "
+                             f"singleton dimensions, got shape={region_shape}")
+
+        target_shape = list(buffer.buffer.shape)
+        if len(target_shape) < 2:
+            raise ValueError("make_sqmma_swizzled_layout requires underlying buffer to be at least "
+                             f"2D, got shape={target_shape}")
+
+        m_dim, n_dim = region_shape[-2], region_shape[-1]
+        if continuity is None:
+            continuity = int(n_dim)
+        base_layout = _ffi_api.make_sqmma_swizzled_layout(
+            int(m_dim),
+            int(n_dim),
+            continuity,
+            int(tvm.DataType(buffer.buffer.dtype).bits),
+            k_major,
+        )
+        if len(target_shape) == 2:
+            return base_layout
+
+        prefix_rank = len(target_shape) - 2
+
+        def forward_fn(*indices):
+            mapped = list(base_layout.map_forward_index([indices[-2], indices[-1]]))
+            return list(indices[:prefix_rank]) + mapped
+
+        return Layout(target_shape, forward_fn)
+
+    raise ValueError(f"Unsupported buffer type for make_sqmma_swizzled_layout: {type(buffer)}")
 
 
 # for TCGEN05MMA Intrinsics
