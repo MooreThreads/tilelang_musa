@@ -42,7 +42,7 @@ struct LowerArgs {
   LayoutMap layout_map;
   Map<Buffer, Buffer> buffer_remap;
   Array<Var> buffer_var_gemm;
-  Map<Var, Bool> buffer_var_sqmma;
+  Map<Layout, Bool> layout_sqmma;
   Map<Layout, Bool> layout_k_major;
   Map<Layout, PrimExpr> layout_sqmma_inst_n;
   Map<Layout, PrimExpr> layout_warp_n;

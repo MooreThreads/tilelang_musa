@@ -215,6 +215,8 @@ namespace attr {
 constexpr const char *kLayoutMap = "layout_map";
 // BlockAttr, Containing k-major info for gemm-related layouts in the block
 constexpr const char *kKMajorMap = "k_major_map";
+// BlockAttr, Containing sqmma info for gemm-related layouts in the block
+constexpr const char *kSqmmaMap = "sqmma_map";
 // BlockAttr, Containing warp_n info for gemm-related layouts in the block
 constexpr const char *kWarpNMap = "warp_n_map";
 // BlockAttr, Containing sqmma inst_n info for gemm-related layouts in the block

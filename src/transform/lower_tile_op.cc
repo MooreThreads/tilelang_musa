@@ -3,6 +3,7 @@
  * \brief Lower the tile op for further codegen.
  */
 
+#include <string>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
@@ -108,31 +109,13 @@ class BufferGemmCollector : public StmtExprVisitor {
 public:
   BufferGemmCollector() { Clear(); }
 
-  void Clear() {
-    buffer_var_gemm_.clear();
-    buffer_var_sqmma_.clear();
-    in_sqmma_context_ = false;
-  }
+  void Clear() { buffer_var_gemm_.clear(); }
 
   void Collect(const Stmt &stmt) { VisitStmt(stmt); }
 
   Array<Var> GetBufferVarGemm() { return buffer_var_gemm_; }
-  Map<Var, Bool> GetBufferVarSQMMA() { return buffer_var_sqmma_; }
 
 private:
-  void VisitStmt_(const AttrStmtNode *op) final {
-    if (op->attr_key == tl::kGemmInst) {
-      bool old = in_sqmma_context_;
-      if (const auto *inst = op->value.as<IntImmNode>()) {
-        in_sqmma_context_ = (inst->value == static_cast<int>(GemmInst::kSQMMA));
-      }
-      VisitStmt(op->body);
-      in_sqmma_context_ = old;
-      return;
-    }
-    StmtExprVisitor::VisitStmt_(op);
-  }
-
   void VisitStmt_(const EvaluateNode *op) {
     const CallNode *call_node = op->value.as<CallNode>();
     // Value of EvaluateNode may not be a call
@@ -153,10 +136,6 @@ private:
       buffer_var_gemm_.push_back(srcA_buffer_var);
       buffer_var_gemm_.push_back(srcB_buffer_var);
       buffer_var_gemm_.push_back(dst_buffer_var);
-      if (in_sqmma_context_) {
-        buffer_var_sqmma_.Set(srcA_buffer_var, Bool(true));
-        buffer_var_sqmma_.Set(srcB_buffer_var, Bool(true));
-      }
     } else if (call->op.same_as(GemmSP::Get())) {
       auto srcA_buffer_access_ptr = Downcast<Call>(call->args[0]);
       ICHECK(srcA_buffer_access_ptr->op.same_as(builtin::tvm_access_ptr()));
@@ -170,16 +149,10 @@ private:
       buffer_var_gemm_.push_back(srcA_buffer_var);
       buffer_var_gemm_.push_back(srcB_buffer_var);
       buffer_var_gemm_.push_back(dst_buffer_var);
-      if (in_sqmma_context_) {
-        buffer_var_sqmma_.Set(srcA_buffer_var, Bool(true));
-        buffer_var_sqmma_.Set(srcB_buffer_var, Bool(true));
-      }
     }
   }
 
   Array<Var> buffer_var_gemm_;
-  Map<Var, Bool> buffer_var_sqmma_;
-  bool in_sqmma_context_{false};
 };
 
 /*!
@@ -287,7 +260,6 @@ public:
     BufferGemmCollector collector;
     collector.Collect(f->body);
     substituter.buffer_var_gemm_ = collector.GetBufferVarGemm();
-    substituter.buffer_var_sqmma_ = collector.GetBufferVarSQMMA();
     PrimFuncNode *fptr = f.CopyOnWrite();
     fptr->body = substituter.VisitStmt(f->body);
     fptr->body =
@@ -308,6 +280,15 @@ public:
 
 private:
   using arith::IRMutatorWithAnalyzer::IRMutatorWithAnalyzer;
+
+  void SetLayoutSQMMA(const Layout &layout, Bool is_sqmma) {
+    if (layout_sqmma_.count(layout)) {
+      ICHECK(layout_sqmma_[layout]->value == is_sqmma->value)
+          << "sqmma mismatch for layout " << layout->DebugOutput();
+    } else {
+      layout_sqmma_.Set(layout, is_sqmma);
+    }
+  }
 
   void SetLayoutKMajor(const Layout &layout, Bool k_major) {
     if (layout_k_major_.count(layout)) {
@@ -349,11 +330,35 @@ private:
         layout_map_.Set(buffer, layout);
       }
     }
+    if (op->annotations.count("layout_override_seq")) {
+      auto seq_map_opt = op->annotations.Get("layout_override_seq")
+                             ->as<Map<tvm::ffi::String, Map<Var, Layout>>>();
+      if (seq_map_opt.has_value()) {
+        for (const auto &[step_str, step_layouts] : seq_map_opt.value()) {
+          int64_t step = std::stoll(std::string(step_str));
+          LayoutMap resolved_step_layouts;
+          for (const auto &[var, layout] : step_layouts) {
+            if (!buffer_data_to_buffer_.count(var)) {
+              continue;
+            }
+            resolved_step_layouts.Set(buffer_data_to_buffer_[var], layout);
+          }
+          layout_override_steps_[step] = resolved_step_layouts;
+        }
+      }
+    }
     if (op->annotations.count(attr::kKMajorMap)) {
       auto k_major_map =
           op->annotations.at(attr::kKMajorMap).as<Map<Layout, Bool>>().value();
       for (const auto &[layout, k_major] : k_major_map) {
         SetLayoutKMajor(layout, k_major);
+      }
+    }
+    if (op->annotations.count(attr::kSqmmaMap)) {
+      auto sqmma_map =
+          op->annotations.at(attr::kSqmmaMap).as<Map<Layout, Bool>>().value();
+      for (const auto &[layout, is_sqmma] : sqmma_map) {
+        SetLayoutSQMMA(layout, is_sqmma);
       }
     }
     if (op->annotations.count(attr::kWarpNMap)) {
@@ -378,6 +383,7 @@ private:
 
     auto block = Downcast<Block>(arith::IRMutatorWithAnalyzer::VisitStmt_(op));
     auto block_ptr = block.CopyOnWrite();
+    block_ptr->annotations.erase("layout_override_seq");
     for (size_t i = 0; i < block->alloc_buffers.size(); i++) {
       auto buffer = block->alloc_buffers[i];
       if (buffer_remap_.count(buffer)) {
@@ -730,6 +736,23 @@ private:
     // Do not analysis the call node to the global function.
     if (call && call->op.as<GlobalVarNode>())
       return Downcast<Evaluate>(IRMutatorWithAnalyzer::VisitStmt_(op));
+    if (call && call->op.same_as(tl::layout_marker())) {
+      ICHECK_EQ(call->args.size(), 1U)
+          << "tl.layout_marker expects one integer step argument";
+      const auto *step_imm = call->args[0].as<IntImmNode>();
+      ICHECK(step_imm) << "tl.layout_marker step must be IntImm";
+      int64_t step = step_imm->value;
+      if (layout_override_steps_.count(step)) {
+        auto step_layouts = layout_override_steps_[step];
+        for (const auto &[buffer, layout] : step_layouts) {
+          layout_map_.Set(buffer, layout);
+          if (buffer_remap_.count(buffer)) {
+            layout_map_.Set(buffer_remap_[buffer], layout);
+          }
+        }
+      }
+      return Evaluate(IntImm(DataType::Int(32), 0));
+    }
 
     auto tile_op =
         ParseOperator(tvm::ffi::GetRef<Stmt>(op), buffer_data_to_buffer_);
@@ -778,7 +801,7 @@ private:
     auto lowered = tile_op->Lower(
         LowerArgs{target_, thread_bounds, thread_var_->var, callback,
                   barrier_callback, layout_map_, buffer_remap_,
-                  buffer_var_gemm_, buffer_var_sqmma_, layout_k_major_,
+                  buffer_var_gemm_, layout_sqmma_, layout_k_major_,
                   layout_sqmma_inst_n_, layout_warp_n_},
         analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
@@ -819,10 +842,12 @@ private:
   Map<Var, Var> var_remap_;
   bool has_tma_{false};
   Array<Var> buffer_var_gemm_;
-  Map<Var, Bool> buffer_var_sqmma_;
+  Map<Layout, Bool> layout_sqmma_;
   Map<Layout, Bool> layout_k_major_;
   Map<Layout, PrimExpr> layout_sqmma_inst_n_;
   Map<Layout, PrimExpr> layout_warp_n_;
+  // stores all step -> layout_map mappings
+  std::unordered_map<int64_t, LayoutMap> layout_override_steps_;
 };
 
 namespace transform {

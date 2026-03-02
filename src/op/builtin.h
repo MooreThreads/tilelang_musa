@@ -176,6 +176,7 @@ TVM_DLL const Op &create_tma_im2col_descriptor();
  *
  */
 TVM_DLL const Op &create_list_of_mbarrier();
+TVM_DLL const Op &layout_marker();
 
 /*!
  * \brief Get the mbarrier with barrier_id

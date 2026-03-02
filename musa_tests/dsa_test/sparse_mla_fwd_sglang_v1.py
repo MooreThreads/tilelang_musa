@@ -18,7 +18,7 @@ def get_test_device() -> str:
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER:
             True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED:
-            False,
+            True,
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH:
             True,
         #tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
@@ -59,9 +59,9 @@ def sparse_attention_fwd_kernel_v1(
     kv_group=1,
     sm_scale=None,
     is_causal=True,
-    block_I=32,
-    num_stages=2,
-    threads=256,
+    block_I=64,
+    num_stages=0,
+    threads=512,
 ):
     assert dim == tilelang.math.next_power_of_2(
         dim), f"haven't check padding correctness yet, dim={dim}"
@@ -89,7 +89,7 @@ def sparse_attention_fwd_kernel_v1(
     accum_dtype = "float"
 
     H = head_kv
-    padded_H = max(tilelang.math.next_power_of_2(head_kv), 32)
+    padded_H = max(tilelang.math.next_power_of_2(head_kv), 64)
     if padded_H != H:
         assert kv_group == 1
     BI = block_I
@@ -120,8 +120,7 @@ def sparse_attention_fwd_kernel_v1(
                 ):
             Q_shared = T.alloc_shared([H_per_block, D], dtype)
             Q_tail_shared = T.alloc_shared([H_per_block, D_tail], dtype)
-            KV_shared_qk = T.alloc_shared([BI, D], dtype)
-            KV_shared_vo = T.alloc_shared([BI, D], dtype)
+            KV_shared = T.alloc_shared([BI, D], dtype)
             K_tail_shared = T.alloc_shared([BI, D_tail], dtype)
             mask = T.alloc_fragment([BI], "bool")
 
@@ -154,11 +153,16 @@ def sparse_attention_fwd_kernel_v1(
                 for bi_i in T.Parallel(BI):
                     mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] >= 0
 
+                T.annotate_layout(
+                    {
+                        KV_shared:
+                            tilelang.layout.make_sqmma_swizzled_layout(KV_shared, k_major=True)
+                    },
+                    allow_reannotation=True,
+                )
                 for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared_qk[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i,
-                                                 d_i]
-                    KV_shared_vo[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i,
-                                                 d_i]
+                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i,
+                                              d_i]
                 for bi_i, d_i in T.Parallel(BI, D_tail):
                     K_tail_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i,
                                                   D + d_i]
@@ -167,7 +171,7 @@ def sparse_attention_fwd_kernel_v1(
                     acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))
                 T.gemm(
                     Q_shared,
-                    KV_shared_qk,
+                    KV_shared,
                     acc_s,
                     transpose_B=True,
                     policy=T.GemmWarpPolicy.FullRow,
@@ -192,7 +196,18 @@ def sparse_attention_fwd_kernel_v1(
                     acc_o[h_i, d_i] = acc_o[h_i, d_i] * alpha[h_i]
 
                 T.copy(acc_s, S_shared)
-                T.gemm(S_shared, KV_shared_vo, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                T.annotate_layout(
+                    {
+                        KV_shared:
+                            tilelang.layout.make_sqmma_swizzled_layout(
+                                KV_shared, continuity=64, k_major=False)
+                    },
+                    allow_reannotation=True,
+                )
+                for bi_i, d_i in T.Parallel(BI, D):
+                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i,
+                                              d_i]
+                T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
             # Rescale
             for h_i, d_i in T.Parallel(H_per_block, D):
@@ -212,8 +227,8 @@ def sparse_mla_fwd_interface(
     sm_scale=None,
     return_p_sum: bool = False,
     d_v=64,
-    num_stages=2,
-    threads=256,
+    num_stages=0,
+    threads=512,
 ):
     is_casual = True
     assert return_p_sum == False, "This kernel file is for fwd only"
@@ -298,8 +313,8 @@ def test_sparse_mla_fwd(
     topk=2048,
     dtype=torch.bfloat16,
     check_correctness=True,
-    num_stages=2,
-    threads=256,
+    num_stages=0,
+    threads=512,
 ):
     torch.random.manual_seed(0)
     device = get_test_device()
@@ -355,8 +370,8 @@ def test_sparse_mla_fwd(
 if __name__ == "__main__":
     test_sparse_mla_fwd(
         B=1,
-        S=1536,  #1536,
-        SKV=8192,  #1536,
+        S=1024,  #1024,
+        SKV=8192,  #1024,
         H=64,  #64,
         HKV=1,
         DQK=576,
@@ -364,6 +379,6 @@ if __name__ == "__main__":
         topk=2048,
         dtype=torch.bfloat16,
         check_correctness=False,
-        num_stages=2,
-        threads=256,
+        num_stages=0,
+        threads=512,
     )
