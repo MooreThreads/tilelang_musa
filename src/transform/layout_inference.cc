@@ -121,7 +121,6 @@ struct LayoutInferenceResult {
   Map<For, PrimExpr> predicate_map;
   Map<Layout, Bool> k_major_map;
   Map<Layout, Bool> sqmma_map;
-  Map<Layout, PrimExpr> warp_n_map;
   Map<Layout, PrimExpr> sqmma_inst_n_map;
 };
 
@@ -421,12 +420,11 @@ public:
     }
     Map<Layout, Bool> k_major_map;
     Map<Layout, Bool> sqmma_map;
-    Map<Layout, PrimExpr> warp_n_map;
     Map<Layout, PrimExpr> sqmma_inst_n_map;
     BuildLayoutHintsFromInferList(layout_map, k_major_map, sqmma_map,
-                                  warp_n_map, sqmma_inst_n_map);
-    return {layout_map, for_map,    predicate_map,   k_major_map,
-            sqmma_map,  warp_n_map, sqmma_inst_n_map};
+                                  sqmma_inst_n_map);
+    return {layout_map,  for_map,   predicate_map,
+            k_major_map, sqmma_map, sqmma_inst_n_map};
   }
 
   void Collect(const PrimFunc &f) {
@@ -578,7 +576,6 @@ private:
   void BuildLayoutHintsFromInferList(const LayoutMap &layout_map,
                                      Map<Layout, Bool> &k_major_map,
                                      Map<Layout, Bool> &sqmma_map,
-                                     Map<Layout, PrimExpr> &warp_n_map,
                                      Map<Layout, PrimExpr> &sqmma_inst_n_map) {
     if (!TargetIsPH1(target_)) {
       return;
@@ -632,11 +629,6 @@ private:
         if (!b_layout.has_value()) {
           continue;
         }
-        auto warp_parts = gemm->policy->ComputeWarpPartition(
-            gemm->M, gemm->N, *block_size, target_, GemmInst::kSQMMA);
-        SetLayoutExprHint(warp_n_map, b_layout.value(),
-                          IntImm(DataType::Int(32), warp_parts.second),
-                          "warp_n");
         auto sqmma_inst = gemm->SelectSQMMAInstShape(*block_size, target_);
         if (sqmma_inst.has_value() && !gemm->trans_B) {
           SetLayoutExprHint(sqmma_inst_n_map, b_layout.value(),
@@ -940,7 +932,6 @@ private:
     block_ptr->annotations.Set(attr::kLayoutMap, result_.layout_map);
     block_ptr->annotations.Set(attr::kKMajorMap, result_.k_major_map);
     block_ptr->annotations.Set(attr::kSqmmaMap, result_.sqmma_map);
-    block_ptr->annotations.Set(attr::kWarpNMap, result_.warp_n_map);
     block_ptr->annotations.Set(attr::kSqmmaInstNMap, result_.sqmma_inst_n_map);
     return block;
   }

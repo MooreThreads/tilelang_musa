@@ -361,14 +361,6 @@ private:
         SetLayoutSQMMA(layout, is_sqmma);
       }
     }
-    if (op->annotations.count(attr::kWarpNMap)) {
-      auto warp_n_map = op->annotations.at(attr::kWarpNMap)
-                            .as<Map<Layout, PrimExpr>>()
-                            .value();
-      for (const auto &[layout, warp_n] : warp_n_map) {
-        SetLayoutExprHint(&layout_warp_n_, layout, warp_n, "warp_n");
-      }
-    }
     if (op->annotations.count(attr::kSqmmaInstNMap)) {
       auto inst_n_map = op->annotations.at(attr::kSqmmaInstNMap)
                             .as<Map<Layout, PrimExpr>>()
@@ -798,12 +790,12 @@ private:
       thread_bounds = Range::FromMinExtent(0, 1);
     }
 
-    auto lowered = tile_op->Lower(
-        LowerArgs{target_, thread_bounds, thread_var_->var, callback,
-                  barrier_callback, layout_map_, buffer_remap_,
-                  buffer_var_gemm_, layout_sqmma_, layout_k_major_,
-                  layout_sqmma_inst_n_, layout_warp_n_},
-        analyzer_);
+    auto lowered =
+        tile_op->Lower(LowerArgs{target_, thread_bounds, thread_var_->var,
+                                 callback, barrier_callback, layout_map_,
+                                 buffer_remap_, buffer_var_gemm_, layout_sqmma_,
+                                 layout_k_major_, layout_sqmma_inst_n_},
+                       analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }
 
@@ -845,7 +837,6 @@ private:
   Map<Layout, Bool> layout_sqmma_;
   Map<Layout, Bool> layout_k_major_;
   Map<Layout, PrimExpr> layout_sqmma_inst_n_;
-  Map<Layout, PrimExpr> layout_warp_n_;
   // stores all step -> layout_map mappings
   std::unordered_map<int64_t, LayoutMap> layout_override_steps_;
 };

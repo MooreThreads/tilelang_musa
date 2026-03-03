@@ -234,21 +234,6 @@ static Optional<int> GetLayoutSqmmaInstN(const LowerArgs &T,
   return Optional<int>();
 }
 
-static Optional<int> GetLayoutWarpN(const LowerArgs &T, const Buffer &buf) {
-  auto layout = GetActiveLayout(T, buf);
-  if (!layout.defined()) {
-    return Optional<int>();
-  }
-  auto warp_n_expr = GetLayoutHintByKey(T.layout_warp_n, layout.value());
-  if (!warp_n_expr.has_value()) {
-    return Optional<int>();
-  }
-  if (const auto *imm = warp_n_expr.value().as<IntImmNode>()) {
-    return Optional<int>(static_cast<int>(imm->value));
-  }
-  return Optional<int>();
-}
-
 /*!
  * \brief Utility function to reverse an array.
  * This is commonly used to convert between row-major and column-major layouts.
@@ -1805,23 +1790,35 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
   PrimExpr split_stride = 0;
   PrimExpr split_size_expr = 0;
   if (TargetIsMusa(T.target) && is_load && desc.rank == 2) {
-    auto get_warp_n = [&](const Buffer &buf) -> int {
-      return GetLayoutWarpN(T, buf).value_or(-1);
-    };
-    int warp_n = get_warp_n(shared_tensor);
-    int is_k_major = get_k_major(shared_tensor);
-    if (warp_n > 1 && is_k_major == 0) {
+    auto sqmma_opt = GetLayoutSQMMA(T, shared_tensor);
+    auto k_major_opt = GetLayoutKMajor(T, shared_tensor);
+    bool is_musa_sqmma_tma_load =
+        src.scope() == "global" &&
+        (dst.scope() == "shared" || dst.scope() == "shared.dyn") &&
+        k_major_opt.has_value() && sqmma_opt.value_or(false);
+    if (is_musa_sqmma_tma_load) {
       auto n_dim = as_const_int(desc.smem_box[0]);
-      ICHECK(n_dim != nullptr)
-          << "warp_n split requires static N for " << shared_tensor->name;
-      ICHECK((*n_dim) % warp_n == 0)
-          << "N must be divisible by warp_n for " << shared_tensor->name
-          << ", N=" << *n_dim << ", warp_n=" << warp_n;
-      int split_size = (*n_dim) / warp_n;
-      split_count = warp_n;
-      split_size_expr = IntImm(DataType::Int(32), split_size);
-      split_stride = split_size_expr * desc.smem_box[1];
-      desc.smem_box.Set(0, split_size_expr);
+      bool is_k_major = k_major_opt.value();
+      if (!is_k_major) {
+        int inst_n = GetLayoutSqmmaInstN(T, shared_tensor).value_or(-1);
+        if (inst_n > 0 && n_dim != nullptr && (*n_dim) > inst_n &&
+            ((*n_dim) % inst_n) == 0) {
+          split_count = (*n_dim) / inst_n;
+          split_size_expr = IntImm(DataType::Int(32), inst_n);
+          split_stride = split_size_expr * desc.smem_box[1];
+          desc.smem_box.Set(0, split_size_expr);
+        }
+      } else {
+        int elem_bytes = shared_tensor->dtype.bytes();
+        int max_inner_elems = elem_bytes > 0 ? 256 / elem_bytes : 0;
+        if (max_inner_elems > 0 && n_dim != nullptr &&
+            (*n_dim) * elem_bytes > 256 && ((*n_dim) % max_inner_elems) == 0) {
+          split_count = (*n_dim) / max_inner_elems;
+          split_size_expr = IntImm(DataType::Int(32), max_inner_elems);
+          split_stride = split_size_expr * desc.smem_box[1];
+          desc.smem_box.Set(0, split_size_expr);
+        }
+      }
     }
   }
 
@@ -1835,23 +1832,12 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
       instruction_dim = 128 / src->dtype.bytes();
     }
   }
-  if (instruction_dim > 256) {
+  if (!TargetIsMusa(T.target) && instruction_dim > 256) {
     // smem_box dim must be in [0, 256]
     // if is 512, we need to split the copy into two parts
     ICHECK((*inner_box_dim) % 256 == 0)
         << "inner_box_dim: " << *inner_box_dim << " is not divisible by 256";
     instruction_dim = 256;
-  }
-  if (TargetIsMusa(T.target)) {
-    constexpr int kMusaTmaMaxBytes = 256;
-    int max_elems = kMusaTmaMaxBytes / shared_tensor->dtype.bytes();
-    if (max_elems > 0 &&
-        instruction_dim * shared_tensor->dtype.bytes() > kMusaTmaMaxBytes) {
-      ICHECK((*inner_box_dim) % max_elems == 0)
-          << "inner_box_dim: " << *inner_box_dim
-          << " is not divisible by max_elems: " << max_elems;
-      instruction_dim = max_elems;
-    }
   }
   ICHECK((*inner_box_dim) % instruction_dim == 0)
       << "inner_box_dim: " << *inner_box_dim
