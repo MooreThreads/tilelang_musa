@@ -59,6 +59,62 @@ using namespace tir;
 using arith::IRMutatorWithAnalyzer;
 using arith::IRVisitorWithAnalyzer;
 
+namespace {
+
+Optional<Layout>
+TryLiftLayoutToInputShape(const Layout &layout,
+                          const Array<PrimExpr> &target_shape) {
+  const auto src_shape = layout->InputShape();
+  if (src_shape.size() > target_shape.size()) {
+    return Optional<Layout>();
+  }
+
+  const size_t prefix_rank = target_shape.size() - src_shape.size();
+  StructuralEqual structurally_equal;
+  for (size_t i = 0; i < src_shape.size(); ++i) {
+    if (!structurally_equal(src_shape[i], target_shape[prefix_rank + i])) {
+      return Optional<Layout>();
+    }
+  }
+
+  if (prefix_rank == 0) {
+    return layout;
+  }
+
+  Map<Var, PrimExpr> suffix_var_map;
+  for (size_t i = 0; i < src_shape.size(); ++i) {
+    suffix_var_map.Set(InputPlaceholder(i), InputPlaceholder(prefix_rank + i));
+  }
+
+  Array<PrimExpr> lifted_forward;
+  for (size_t i = 0; i < prefix_rank; ++i) {
+    lifted_forward.push_back(InputPlaceholder(i));
+  }
+  for (const auto &e : layout->GetForwardIndex()) {
+    lifted_forward.push_back(Substitute(e, suffix_var_map));
+  }
+  return Layout(target_shape, lifted_forward);
+}
+
+bool IsLayoutEquivalentUnderPrefixLift(const Layout &lhs, const Layout &rhs) {
+  if (lhs->IsEqual(rhs.get())) {
+    return true;
+  }
+
+  auto lifted_lhs = TryLiftLayoutToInputShape(lhs, rhs->InputShape());
+  if (lifted_lhs.defined() && lifted_lhs.value()->IsEqual(rhs.get())) {
+    return true;
+  }
+
+  auto lifted_rhs = TryLiftLayoutToInputShape(rhs, lhs->InputShape());
+  if (lifted_rhs.defined() && lhs->IsEqual(lifted_rhs.value().get())) {
+    return true;
+  }
+  return false;
+}
+
+} // namespace
+
 struct LayoutInferenceResult {
   Map<Buffer, Layout> layout_map;
   Map<For, Fragment> for_map;
@@ -133,7 +189,7 @@ public:
         if (!layout_map.count(buffer)) {
           layout_map.Set(buffer, expected);
         }
-        ICHECK(layout->IsEqual(expected.get()))
+        ICHECK(IsLayoutEquivalentUnderPrefixLift(layout, expected))
             << "Layout conflict under allow_reannotation for buffer " << buffer
             << ". Inferred layout: " << layout->DebugOutput()
             << ", expected layout in current reannotation interval: "
@@ -181,7 +237,7 @@ public:
           }
         }
         // If already in map, ensure they are structurally equal
-        ICHECK(layout->IsEqual(layout_map[buffer].get()))
+        ICHECK(IsLayoutEquivalentUnderPrefixLift(layout, layout_map[buffer]))
             << "Get different layout for " << buffer
             << "\n current layout: " << layout->DebugOutput()
             << "\n previous layout: " << layout_map[buffer]->DebugOutput();
