@@ -218,17 +218,18 @@ static Optional<bool> GetLayoutSQMMA(const LowerArgs &T, const Buffer &buf) {
   return Optional<bool>();
 }
 
-static Optional<int> GetLayoutSqmmaInstN(const LowerArgs &T,
-                                         const Buffer &buf) {
+static Optional<int> GetLayoutSqmmaInstSplit(const LowerArgs &T,
+                                             const Buffer &buf) {
   auto layout = GetActiveLayout(T, buf);
   if (!layout.defined()) {
     return Optional<int>();
   }
-  auto inst_n_expr = GetLayoutHintByKey(T.layout_sqmma_inst_n, layout.value());
-  if (!inst_n_expr.has_value()) {
+  auto inst_split_expr =
+      GetLayoutHintByKey(T.layout_sqmma_inst_split, layout.value());
+  if (!inst_split_expr.has_value()) {
     return Optional<int>();
   }
-  if (const auto *imm = inst_n_expr.value().as<IntImmNode>()) {
+  if (const auto *imm = inst_split_expr.value().as<IntImmNode>()) {
     return Optional<int>(static_cast<int>(imm->value));
   }
   return Optional<int>();
@@ -1038,19 +1039,19 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
   size_t split_dim_idx = 0;
   if (is_musa_sqmma_norm_copy) {
     if (!dst_is_k_major) {
-      int inst_n = GetLayoutSqmmaInstN(T, dst).value_or(-1);
-      if (inst_n > 0) {
+      int sqmma_inst_split = GetLayoutSqmmaInstSplit(T, dst).value_or(-1);
+      if (sqmma_inst_split > 0) {
         split_dim_idx = dst_range.size() >= 2 ? 1 : dst_range.size() - 1;
         auto dst_n_extent = as_const_int(dst_range[split_dim_idx]->extent);
-        if (dst_n_extent != nullptr && (*dst_n_extent) > inst_n) {
+        if (dst_n_extent != nullptr && (*dst_n_extent) > sqmma_inst_split) {
           auto src_n_extent = as_const_int(src_range[split_dim_idx]->extent);
-          bool dst_divisible = ((*dst_n_extent) % inst_n) == 0;
-          bool src_divisible =
-              src_n_extent == nullptr || ((*src_n_extent) % inst_n) == 0;
+          bool dst_divisible = ((*dst_n_extent) % sqmma_inst_split) == 0;
+          bool src_divisible = src_n_extent == nullptr ||
+                               ((*src_n_extent) % sqmma_inst_split) == 0;
           if (dst_divisible && src_divisible) {
             need_sqmma_split = true;
-            split_inner_extent = inst_n;
-            split_count = (*dst_n_extent) / inst_n;
+            split_inner_extent = sqmma_inst_split;
+            split_count = (*dst_n_extent) / sqmma_inst_split;
           }
         }
       }
@@ -1800,11 +1801,12 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
       auto n_dim = as_const_int(desc.smem_box[0]);
       bool is_k_major = k_major_opt.value();
       if (!is_k_major) {
-        int inst_n = GetLayoutSqmmaInstN(T, shared_tensor).value_or(-1);
-        if (inst_n > 0 && n_dim != nullptr && (*n_dim) > inst_n &&
-            ((*n_dim) % inst_n) == 0) {
-          split_count = (*n_dim) / inst_n;
-          split_size_expr = IntImm(DataType::Int(32), inst_n);
+        int sqmma_inst_split =
+            GetLayoutSqmmaInstSplit(T, shared_tensor).value_or(-1);
+        if (sqmma_inst_split > 0 && n_dim != nullptr &&
+            (*n_dim) > sqmma_inst_split && ((*n_dim) % sqmma_inst_split) == 0) {
+          split_count = (*n_dim) / sqmma_inst_split;
+          split_size_expr = IntImm(DataType::Int(32), sqmma_inst_split);
           split_stride = split_size_expr * desc.smem_box[1];
           desc.smem_box.Set(0, split_size_expr);
         }

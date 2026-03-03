@@ -361,13 +361,13 @@ private:
         SetLayoutSQMMA(layout, is_sqmma);
       }
     }
-    if (op->annotations.count(attr::kSqmmaInstNMap)) {
-      auto inst_n_map = op->annotations.at(attr::kSqmmaInstNMap)
-                            .as<Map<Layout, PrimExpr>>()
-                            .value();
-      for (const auto &[layout, inst_n] : inst_n_map) {
-        SetLayoutExprHint(&layout_sqmma_inst_n_, layout, inst_n,
-                          "sqmma inst_n");
+    if (op->annotations.count(attr::kSqmmaInstSplitMap)) {
+      auto inst_split_map = op->annotations.at(attr::kSqmmaInstSplitMap)
+                                .as<Map<Layout, PrimExpr>>()
+                                .value();
+      for (const auto &[layout, inst_split] : inst_split_map) {
+        SetLayoutExprHint(&layout_sqmma_inst_split_, layout, inst_split,
+                          "sqmma inst split");
       }
     }
     // Begin a new workspace collection frame for this block scope
@@ -794,7 +794,7 @@ private:
         tile_op->Lower(LowerArgs{target_, thread_bounds, thread_var_->var,
                                  callback, barrier_callback, layout_map_,
                                  buffer_remap_, buffer_var_gemm_, layout_sqmma_,
-                                 layout_k_major_, layout_sqmma_inst_n_},
+                                 layout_k_major_, layout_sqmma_inst_split_},
                        analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }
@@ -836,7 +836,7 @@ private:
   Array<Var> buffer_var_gemm_;
   Map<Layout, Bool> layout_sqmma_;
   Map<Layout, Bool> layout_k_major_;
-  Map<Layout, PrimExpr> layout_sqmma_inst_n_;
+  Map<Layout, PrimExpr> layout_sqmma_inst_split_;
   // stores all step -> layout_map mappings
   std::unordered_map<int64_t, LayoutMap> layout_override_steps_;
 };
