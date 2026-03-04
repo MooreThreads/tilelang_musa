@@ -44,7 +44,7 @@ struct LowerArgs {
   Array<Var> buffer_var_gemm;
   Map<Layout, Bool> layout_sqmma;
   Map<Layout, Bool> layout_k_major;
-  Map<Layout, PrimExpr> layout_sqmma_inst_n;
+  Map<Layout, PrimExpr> layout_sqmma_inst_split;
 };
 
 struct LayoutInferArgs {

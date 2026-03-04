@@ -217,8 +217,9 @@ constexpr const char *kLayoutMap = "layout_map";
 constexpr const char *kKMajorMap = "k_major_map";
 // BlockAttr, Containing sqmma info for gemm-related layouts in the block
 constexpr const char *kSqmmaMap = "sqmma_map";
-// BlockAttr, Containing sqmma inst_n info for gemm-related layouts in the block
-constexpr const char *kSqmmaInstNMap = "sqmma_inst_n_map";
+// BlockAttr, Containing sqmma split-inst info for gemm-related layouts in the
+// block
+constexpr const char *kSqmmaInstSplitMap = "sqmma_inst_split_map";
 } // namespace attr
 
 } // namespace tl

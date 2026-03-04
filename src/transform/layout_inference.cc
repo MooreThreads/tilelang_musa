@@ -121,7 +121,7 @@ struct LayoutInferenceResult {
   Map<For, PrimExpr> predicate_map;
   Map<Layout, Bool> k_major_map;
   Map<Layout, Bool> sqmma_map;
-  Map<Layout, PrimExpr> sqmma_inst_n_map;
+  Map<Layout, PrimExpr> sqmma_inst_split_map;
 };
 
 class BufferUseDefCollector : public IRVisitorWithAnalyzer {
@@ -420,11 +420,11 @@ public:
     }
     Map<Layout, Bool> k_major_map;
     Map<Layout, Bool> sqmma_map;
-    Map<Layout, PrimExpr> sqmma_inst_n_map;
+    Map<Layout, PrimExpr> sqmma_inst_split_map;
     BuildLayoutHintsFromInferList(layout_map, k_major_map, sqmma_map,
-                                  sqmma_inst_n_map);
+                                  sqmma_inst_split_map);
     return {layout_map,  for_map,   predicate_map,
-            k_major_map, sqmma_map, sqmma_inst_n_map};
+            k_major_map, sqmma_map, sqmma_inst_split_map};
   }
 
   void Collect(const PrimFunc &f) {
@@ -573,10 +573,11 @@ private:
     return Optional<Layout>();
   }
 
-  void BuildLayoutHintsFromInferList(const LayoutMap &layout_map,
-                                     Map<Layout, Bool> &k_major_map,
-                                     Map<Layout, Bool> &sqmma_map,
-                                     Map<Layout, PrimExpr> &sqmma_inst_n_map) {
+  void
+  BuildLayoutHintsFromInferList(const LayoutMap &layout_map,
+                                Map<Layout, Bool> &k_major_map,
+                                Map<Layout, Bool> &sqmma_map,
+                                Map<Layout, PrimExpr> &sqmma_inst_split_map) {
     if (!TargetIsPH1(target_)) {
       return;
     }
@@ -626,14 +627,20 @@ private:
         if (b_layout.has_value()) {
           SetLayoutBoolHint(sqmma_map, b_layout.value(), Bool(true), "sqmma");
         }
-        if (!b_layout.has_value()) {
-          continue;
-        }
         auto sqmma_inst = gemm->SelectSQMMAInstShape(*block_size, target_);
-        if (sqmma_inst.has_value() && !gemm->trans_B) {
-          SetLayoutExprHint(sqmma_inst_n_map, b_layout.value(),
-                            IntImm(DataType::Int(32), (*sqmma_inst)[1]),
-                            "sqmma inst_n");
+        if (sqmma_inst.has_value()) {
+          // For A transpose layout, split by instruction M dimension.
+          if (a_layout.has_value() && gemm->trans_A) {
+            SetLayoutExprHint(sqmma_inst_split_map, a_layout.value(),
+                              IntImm(DataType::Int(32), (*sqmma_inst)[0]),
+                              "sqmma inst split");
+          }
+          // For B non-transpose layout, split by instruction N dimension.
+          if (b_layout.has_value() && !gemm->trans_B) {
+            SetLayoutExprHint(sqmma_inst_split_map, b_layout.value(),
+                              IntImm(DataType::Int(32), (*sqmma_inst)[1]),
+                              "sqmma inst split");
+          }
         }
       }
     }
@@ -932,7 +939,8 @@ private:
     block_ptr->annotations.Set(attr::kLayoutMap, result_.layout_map);
     block_ptr->annotations.Set(attr::kKMajorMap, result_.k_major_map);
     block_ptr->annotations.Set(attr::kSqmmaMap, result_.sqmma_map);
-    block_ptr->annotations.Set(attr::kSqmmaInstNMap, result_.sqmma_inst_n_map);
+    block_ptr->annotations.Set(attr::kSqmmaInstSplitMap,
+                               result_.sqmma_inst_split_map);
     return block;
   }
 
