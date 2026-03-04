@@ -45,7 +45,6 @@ struct LowerArgs {
   Map<Layout, Bool> layout_sqmma;
   Map<Layout, Bool> layout_k_major;
   Map<Layout, PrimExpr> layout_sqmma_inst_n;
-  Map<Layout, PrimExpr> layout_warp_n;
 };
 
 struct LayoutInferArgs {
