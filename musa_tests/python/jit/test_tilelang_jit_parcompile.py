@@ -20,7 +20,7 @@ def matmul_kernel_jit(
     out_dtype='float32',
     accum_dtype='float32',
     num_stages=2,
-    threads=128,
+    threads=512,
 ):
     A_shape = (K, M) if trans_A else (M, K)
     B_shape = (N, K) if trans_B else (K, N)
