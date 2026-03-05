@@ -1036,40 +1036,45 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
   bool need_sqmma_split = false;
   int split_inner_extent = -1;
   int split_count = -1;
-  size_t split_dim_idx = 0;
+  ICHECK(!src_range.empty() && !dst_range.empty());
+  size_t split_src_dim_idx = src_range.size() - 1;
+  size_t split_dst_dim_idx = dst_range.size() - 1;
   if (is_musa_sqmma_norm_copy) {
     if (!dst_is_k_major) {
       int sqmma_inst_split = GetLayoutSqmmaInstSplit(T, dst).value_or(-1);
       if (sqmma_inst_split > 0) {
-        split_dim_idx = dst_range.size() >= 2 ? 1 : dst_range.size() - 1;
-        auto dst_n_extent = as_const_int(dst_range[split_dim_idx]->extent);
-        if (dst_n_extent != nullptr && (*dst_n_extent) > sqmma_inst_split) {
-          auto src_n_extent = as_const_int(src_range[split_dim_idx]->extent);
-          bool dst_divisible = ((*dst_n_extent) % sqmma_inst_split) == 0;
-          bool src_divisible = src_n_extent == nullptr ||
-                               ((*src_n_extent) % sqmma_inst_split) == 0;
+        auto dst_split_extent =
+            as_const_int(dst_range[split_dst_dim_idx]->extent);
+        if (dst_split_extent != nullptr &&
+            (*dst_split_extent) > sqmma_inst_split) {
+          auto src_split_extent =
+              as_const_int(src_range[split_src_dim_idx]->extent);
+          bool dst_divisible = ((*dst_split_extent) % sqmma_inst_split) == 0;
+          bool src_divisible = src_split_extent == nullptr ||
+                               ((*src_split_extent) % sqmma_inst_split) == 0;
           if (dst_divisible && src_divisible) {
             need_sqmma_split = true;
             split_inner_extent = sqmma_inst_split;
-            split_count = (*dst_n_extent) / sqmma_inst_split;
+            split_count = (*dst_split_extent) / sqmma_inst_split;
           }
         }
       }
     } else {
       int elem_bytes = dst->dtype.bytes();
       int max_inner_elems = elem_bytes > 0 ? 256 / elem_bytes : 0;
-      split_dim_idx = dst_range.size() - 1;
-      auto dst_inner_extent = as_const_int(dst_range[split_dim_idx]->extent);
-      if (max_inner_elems > 0 && dst_inner_extent != nullptr &&
-          (*dst_inner_extent) * elem_bytes > 256) {
-        auto src_inner_extent = as_const_int(src_range[split_dim_idx]->extent);
-        bool dst_divisible = ((*dst_inner_extent) % max_inner_elems) == 0;
-        bool src_divisible = src_inner_extent == nullptr ||
-                             ((*src_inner_extent) % max_inner_elems) == 0;
+      auto dst_split_extent =
+          as_const_int(dst_range[split_dst_dim_idx]->extent);
+      if (max_inner_elems > 0 && dst_split_extent != nullptr &&
+          (*dst_split_extent) * elem_bytes > 256) {
+        auto src_split_extent =
+            as_const_int(src_range[split_src_dim_idx]->extent);
+        bool dst_divisible = ((*dst_split_extent) % max_inner_elems) == 0;
+        bool src_divisible = src_split_extent == nullptr ||
+                             ((*src_split_extent) % max_inner_elems) == 0;
         if (dst_divisible && src_divisible) {
           need_sqmma_split = true;
           split_inner_extent = max_inner_elems;
-          split_count = (*dst_inner_extent) / max_inner_elems;
+          split_count = (*dst_split_extent) / max_inner_elems;
         }
       }
     }
@@ -1081,8 +1086,8 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
 
   auto split_op = tvm::ffi::make_object<CopyNode>(*this);
   Var split_var("sqmma_split");
-  size_t src_inner_idx = split_dim_idx;
-  size_t dst_inner_idx = split_dim_idx;
+  size_t src_inner_idx = split_src_dim_idx;
+  size_t dst_inner_idx = split_dst_dim_idx;
   auto new_src_range = split_op->src_range;
   auto new_dst_range = split_op->dst_range;
   new_src_range.Set(src_inner_idx,
@@ -1649,8 +1654,8 @@ Stmt CopyNode::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
     // skip one range if it is 1
     // in case of global range is [128, 64], while shared range is [1, 128, 64]
     // A_shared[0, :, :].
-    while (is_one(shared_range[s_range_idx]->extent) &&
-           s_range_idx < shared_range.size()) {
+    while (s_range_idx < shared_range.size() &&
+           is_one(shared_range[s_range_idx]->extent)) {
       s_range_idx++;
     }
     if (s_range_idx >= shared_range.size()) {

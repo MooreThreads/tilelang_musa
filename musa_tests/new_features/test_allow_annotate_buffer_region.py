@@ -88,6 +88,7 @@ def ref_two_gemm(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Ten
     "M, N, K, dtype, threads",
     [
         (64, 64, 64, torch.bfloat16, 128),
+        (64, 64, 256, torch.bfloat16, 128),
     ],
 )
 def test_two_gemm_layout(M, N, K, dtype, threads):
