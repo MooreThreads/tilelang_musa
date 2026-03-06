@@ -46,7 +46,7 @@ def matmul(
                     T.copy(B[bx * block_N, k * block_K], B_shared)
                 else:
                     T.copy(B[k * block_K, bx * block_N], B_shared)
-                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B)
+                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B, policy=T.GemmWarpPolicy.FullRow)
             T.copy(C_local, C[by * block_M, bx * block_N])
 
     return main
@@ -65,7 +65,7 @@ def run_gemm(
     block_N,
     block_K,
     num_stages=3,
-    num_threads=128,
+    num_threads=512,
 ):
     program = matmul(
         M,
@@ -175,7 +175,7 @@ def run_gemm_jit_kernel(
     block_N,
     block_K,
     num_stages=3,
-    num_threads=128,
+    num_threads=512,
 ):
     program = matmu_jit_kernel(
         M,
@@ -247,7 +247,7 @@ def run_ctypes_kernel_do_bench(M,
                                block_N,
                                block_K,
                                num_stages=3,
-                               num_threads=128):
+                               num_threads=512):
     program = matmul(
         M,
         N,
@@ -296,7 +296,7 @@ def run_ctypes_kernel_multi_stream(M,
                                    block_N,
                                    block_K,
                                    num_stages=3,
-                                   num_threads=128):
+                                   num_threads=512):
     program = matmul(
         M,
         N,
@@ -349,7 +349,7 @@ def run_ctypes_dynamic_shape(M,
                              block_N,
                              block_K,
                              num_stages=3,
-                             num_threads=128):
+                             num_threads=512):
     program = matmul(
         M,
         N,

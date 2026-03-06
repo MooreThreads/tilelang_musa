@@ -46,7 +46,7 @@ def matmul(
                     T.copy(B[bx * block_N, k * block_K], B_shared)
                 else:
                     T.copy(B[k * block_K, bx * block_N], B_shared)
-                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B)
+                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B, policy=T.GemmWarpPolicy.FullRow)
             T.copy(C_local, C[by * block_M, bx * block_N])
 
     return main
@@ -65,7 +65,7 @@ def run_gemm(
     block_N,
     block_K,
     num_stages=3,
-    num_threads=128,
+    num_threads=512,
 ):
     program = matmul(
         M,
@@ -156,7 +156,7 @@ def matmu_jit_kernel(
                     T.copy(B[bx * block_N, k * block_K], B_shared)
                 else:
                     T.copy(B[k * block_K, bx * block_N], B_shared)
-                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B)
+                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B, policy=T.GemmWarpPolicy.FullRow)
             T.copy(C_local, C[by * block_M, bx * block_N])
 
     return main
@@ -175,7 +175,7 @@ def run_gemm_jit_kernel(
     block_N,
     block_K,
     num_stages=3,
-    num_threads=128,
+    num_threads=512,
 ):
     program = matmu_jit_kernel(
         M,
@@ -247,7 +247,7 @@ def run_cython_kernel_do_bench(M,
                                block_N,
                                block_K,
                                num_stages=3,
-                               num_threads=128):
+                               num_threads=512):
     program = matmul(
         M,
         N,
@@ -303,7 +303,7 @@ def run_cython_kernel_multi_stream(M,
                                    block_N,
                                    block_K,
                                    num_stages=3,
-                                   num_threads=128):
+                                   num_threads=512):
     program = matmul(
         M,
         N,
@@ -358,7 +358,7 @@ def run_cython_dynamic_shape(M,
                              block_N,
                              block_K,
                              num_stages=3,
-                             num_threads=128):
+                             num_threads=512):
     program = matmul(
         M,
         N,
@@ -427,7 +427,7 @@ def run_cython_dynamic_shape_with_out_idx(M,
                                           block_N,
                                           block_K,
                                           num_stages=3,
-                                          num_threads=128):
+                                          num_threads=512):
     program = matmul(
         M,
         N,
@@ -517,7 +517,7 @@ def matmul_int_variable(
                     T.copy(B[bx * block_N, k * block_K], B_shared)
                 else:
                     T.copy(B[k * block_K, bx * block_N], B_shared)
-                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B)
+                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B, policy=T.GemmWarpPolicy.FullRow)
             for i, j in T.Parallel(block_M, block_N):
                 C_local[i, j] = C_local[i, j] + offset
             T.copy(C_local, C[by * block_M, bx * block_N])
@@ -545,7 +545,7 @@ def run_matmul_int_variable(M, N, K, block_M, block_N, block_K, trans_A, trans_B
 
 def test_matmul_int_variable():
     run_matmul_int_variable(1024, 1024, 1024, 128, 128, 32, False, False, "float16", "float16",
-                            "float32", 0, 128)
+                            "float32", 0, 512)
 
 
 def matmul_float_variable(
@@ -589,7 +589,7 @@ def matmul_float_variable(
                     T.copy(B[bx * block_N, k * block_K], B_shared)
                 else:
                     T.copy(B[k * block_K, bx * block_N], B_shared)
-                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B)
+                T.gemm(A_shared, B_shared, C_local, trans_A, trans_B, policy=T.GemmWarpPolicy.FullRow)
             for i, j in T.Parallel(block_M, block_N):
                 C_local[i, j] = C_local[i, j] + offset
             T.copy(C_local, C[by * block_M, bx * block_N])
@@ -617,7 +617,7 @@ def run_matmul_float_variable(M, N, K, block_M, block_N, block_K, trans_A, trans
 
 def test_matmul_float_variable():
     run_matmul_float_variable(1024, 1024, 1024, 128, 128, 32, False, False, "float16", "float16",
-                              "float32", 0, 128)
+                              "float32", 0, 512)
 
 
 if __name__ == "__main__":
