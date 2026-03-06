@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.backends
 from tilelang import tvm as tvm
@@ -455,6 +456,7 @@ def assert_tl_matmul_block_all_dynamic_correctness_with_pass_config(
     torch.testing.assert_close(C, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.skip(reason="TensorCoreIntrinEmitter contains NV intrinsics, not supported")
 def test_assert_tl_matmul_macro():
     assert_tl_matmul_macro_correctness(128, 128, 128, "float16", "float16", "float16")
     assert_tl_matmul_macro_correctness(66, 128, 128, "float16", "float16", "float16")

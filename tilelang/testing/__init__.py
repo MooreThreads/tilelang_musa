@@ -1,3 +1,4 @@
+import contextlib
 import sys
 import inspect
 import pytest
@@ -5,8 +6,8 @@ import random
 import torch
 import numpy as np
 from tilelang.contrib import nvcc
-from tvm.testing.utils import (requires_cuda, requires_musa, requires_package, requires_llvm, requires_metal,
-                               requires_rocm, _compose)
+from tvm.testing.utils import (requires_cuda, requires_musa, requires_package, requires_llvm,
+                               requires_metal, requires_rocm, _compose)
 
 from tilelang.utils.tensor import torch_assert_close as torch_assert_close
 
@@ -18,8 +19,24 @@ __all__ = [
     'requires_rocm',
     'requires_llvm',
     'main',
+    'matmul_naive',
     'requires_cuda_compute_version',
 ] + [f'requires_cuda_compute_version_{op}' for op in ('ge', 'gt', 'le', 'lt', 'eq')]
+
+
+def matmul_naive(A, B, accum_dtype, out_dtype):
+    """Reference matmul that simulates float16/bfloat16 hardware accumulation via outer product loop.
+
+    Args:
+        A: (M, K) tensor, already transposed if needed.
+        B: (K, N) tensor, already transposed if needed.
+        accum_dtype: torch.dtype for accumulation (e.g., torch.float16).
+        out_dtype: torch.dtype for output.
+    """
+    C = torch.zeros((A.shape[0], B.shape[1]), dtype=accum_dtype, device=A.device)
+    for k in range(A.shape[1]):
+        C.addcmul_(A[:, k:k + 1].to(accum_dtype), B[k:k + 1, :].to(accum_dtype))
+    return C.to(out_dtype)
 
 
 # pytest.main() wrapper to allow running single test file
@@ -34,10 +51,8 @@ def set_random_seed(seed: int = 42) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    try:
+    with contextlib.suppress(BaseException):
         torch.musa.manual_seed_all(seed)
-    except:
-        pass
 
 
 def requires_cuda_compute_version(major_version, minor_version=0, mode="ge"):

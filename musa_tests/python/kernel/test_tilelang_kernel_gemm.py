@@ -1,3 +1,4 @@
+import pytest
 from tilelang import tvm as tvm
 import tilelang.testing
 
@@ -92,6 +93,9 @@ def run_gemm(
             A = A.T
         if trans_B:
             B = B.T
+        if dtypeAccum in ("float16", "bfloat16") or in_dtype == 'int8':
+            return tilelang.testing.matmul_naive(A, B, getattr(torch, dtypeAccum),
+                                                 getattr(torch, out_dtype))
         if in_dtype == "float32":
             # Convert float32 to tfloat32 because tfloat32 mma cannot truncate
             # float32 automatically, -0x1000 meas
@@ -391,6 +395,9 @@ def run_gemm_sr(
             B = B.T
         A = A.to(torch.float)
         B = B.to(torch.float)
+        if dtypeAccum in ("float16", "bfloat16") or in_dtype == 'int8':
+            return tilelang.testing.matmul_naive(A, B, getattr(torch, dtypeAccum),
+                                                 getattr(torch, out_dtype))
         C = torch.matmul(A, B)
         C = C.to(torch.__getattribute__(out_dtype))
         return C
@@ -401,6 +408,7 @@ def run_gemm_sr(
 # WGMMA only supports B in shared
 
 
+@pytest.mark.skip(reason="gemm does not support B in register")
 def test_gemm_f16f16f16_sr():
     run_gemm_sr(
         512,
@@ -521,6 +529,7 @@ def run_gemm_rs(
 # Register source A operand GMMAs must have K-major A layout.
 
 
+@pytest.mark.skip(reason="gemm does not support A in register")
 def test_gemm_f16f16f16_rs():
     run_gemm_rs(
         512,

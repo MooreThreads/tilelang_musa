@@ -1,3 +1,4 @@
+import pytest
 from tilelang import tvm as tvm
 import tilelang.testing
 from tilelang import primitives as P
@@ -98,6 +99,9 @@ def run_matmul_ssr(
             A = A.T
         if trans_B:
             B = B.T
+        if dtypeAccum in ("float16", "bfloat16"):
+            return tilelang.testing.matmul_naive(A, B, getattr(torch, dtypeAccum),
+                                                 getattr(torch, out_dtype))
         C = torch.matmul(A.to(torch.float), B.to(torch.float))
         C = C.to(torch.__getattribute__(out_dtype))
         return C
@@ -126,6 +130,7 @@ def test_gemm_f16f16f16_nt_ssr():
         num_threads=128)
 
 
+@pytest.mark.skip(reason="Primitives contains NV intrinsics, not supported")
 def matmul_rsr(
     M,
     N,
