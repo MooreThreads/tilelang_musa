@@ -197,7 +197,8 @@ private:
 
 class VectorizeRewriter : public StmtExprMutator {
 public:
-  VectorizeRewriter(int vector_size) : vector_size_(vector_size) {}
+  VectorizeRewriter(int vector_size, bool enable_auto_unroll)
+      : vector_size_(vector_size), enable_auto_unroll_(enable_auto_unroll) {}
 
 private:
   Stmt VisitStmt_(const ForNode *node) final {
@@ -222,7 +223,12 @@ private:
         vmap.Set(fnode->loop_var, outer_var * vector_size_ + inner_var);
         Stmt body = Substitute(fnode->body, vmap);
         body = For(inner_var, 0, vector_size_, ForKind::kVectorized, body);
-        body = For(outer_var, 0, extent / vector_size_, fnode->kind, body,
+
+        ForKind outer_kind = fnode->kind;
+        if (enable_auto_unroll_ && outer_kind == ForKind::kSerial) {
+          outer_kind = ForKind::kUnrolled;
+        }
+        body = For(outer_var, 0, extent / vector_size_, outer_kind, body,
                    fnode->thread_binding, fnode->annotations, fnode->span);
         return body;
       }
@@ -233,6 +239,7 @@ private:
 
   const ForNode *inner_for_{};
   const int vector_size_;
+  const bool enable_auto_unroll_;
 };
 
 int GetVectorizeSize(const For &loop) { return VectorizePlanner().Plan(loop); }
@@ -313,7 +320,12 @@ For VectorizeLoop(const For &loop, int vectorize_hint) {
   }
   if (vectorize_hint == 1)
     return loop;
-  auto rewriter = VectorizeRewriter(vectorize_hint);
+  tvm::transform::PassContext ctxt = tvm::transform::PassContext::Current();
+  Optional<Bool> opt_disable_auto_unroll =
+      ctxt->GetConfig(kDisableAutoUnroll, Optional<Bool>());
+  bool disable_auto_unroll = opt_disable_auto_unroll.value_or(Bool(false));
+
+  auto rewriter = VectorizeRewriter(vectorize_hint, !disable_auto_unroll);
   return Downcast<For>(rewriter(loop));
 }
 
