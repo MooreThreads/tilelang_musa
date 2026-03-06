@@ -43,10 +43,20 @@ class PassConfigKey(str, Enum):
     """Disable TMA (Tensor Memory Access) lowering. Default: False"""
 
     TL_DISABLE_SAFE_MEMORY_ACCESS = "tl.disable_safe_memory_legalize"
-    """Disable safe memory access optimization. Default: False"""
+    """Disable automatic global-memory bounds checks inserted by
+    `tl.LegalizeSafeMemoryAccess`. Default: False
+
+    When enabled, TileLang will not rewrite global `BufferLoad`/`BufferStore`
+    with `if_then_else` guards. This can improve performance for kernels that
+    are already provably in-bounds, but may lead to undefined behavior if any
+    global memory access goes out of bounds.
+    """
 
     TL_DISABLE_VECTORIZE_256 = "tl.disable_vectorize_256"
     """Disable usage of LDG/STG 256. Default: False"""
+
+    TL_DISABLE_AUTO_UNROLL = "tl.disable_auto_unroll"
+    """Disable auto unroll for vectorize-split outer loops. Default: False"""
     TL_DISABLE_WGMMA = "tl.disable_wgmma"
     """Disable usage of Hopper WGMMA. Default: False"""
     TL_DISABLE_SQMMA = "tl.disable_sqmma"
