@@ -128,17 +128,24 @@ class Profiler:
             if lhs is not None and rhs is not None:
                 # in case of numsplit template, the ref output may be None
                 # which means the value is invalid, so we skip the comparison
-                def is_float8(tensor: torch.Tensor) -> bool:
+                def needs_upcast(tensor: torch.Tensor) -> bool:
                     return tensor.dtype in {
                         torch.float8_e5m2,
                         torch.float8_e5m2fnuz,
                         torch.float8_e4m3fn,
                         torch.float8_e4m3fnuz,
+                        torch.int8,
+                        torch.uint8,
                     }
 
+                def upcast(tensor: torch.Tensor) -> torch.Tensor:
+                    if tensor.dtype in {torch.int8, torch.uint8}:
+                        return tensor.to(torch.int32)
+                    return tensor.to(torch.float32)
+
                 torch_assert_close(
-                    lhs if not is_float8(lhs) else lhs.to(torch.float32),
-                    rhs if not is_float8(rhs) else rhs.to(torch.float32),
+                    upcast(lhs) if needs_upcast(lhs) else lhs,
+                    upcast(rhs) if needs_upcast(rhs) else rhs,
                     rtol=rtol,
                     atol=atol,
                     max_mismatched_ratio=max_mismatched_ratio,

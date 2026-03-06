@@ -1,3 +1,4 @@
+import pytest
 import torch
 import tilelang
 import tilelang.testing
@@ -303,6 +304,7 @@ def run_gemm_sp_sm80(
     )
 
 
+@pytest.mark.skip(reason="Skipped because make_metadata_layout not supported on MUSA")
 def test_gemm_sp_sm90():
     run_gemm_sp_sm90(512, 1024, 768, "float16", "float32", "float32", 64, 64, 32, 2, 128)
     run_gemm_sp_sm90(512, 1024, 768, "float16", "float32", "float32", 64, 64, 32, 0, 256)
@@ -328,6 +330,7 @@ def test_gemm_sp_sm90():
     run_gemm_sp_sm90(512, 1024, 768, "int8", "int32", "int32", 64, 64, 64, 2, 128, False, True)
 
 
+@pytest.mark.skip(reason="Skipped because make_metadata_layout not supported on MUSA")
 def test_gemm_sp_sm80():
     run_gemm_sp_sm80(512, 1024, 768, "float16", "float32", "float32", 32, 32, 32, 0, 32)
     run_gemm_sp_sm80(512, 1024, 768, "float16", "float32", "float32", 64, 64, 64, 0, 32)

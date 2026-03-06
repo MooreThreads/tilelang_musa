@@ -206,6 +206,9 @@ def run_gemm_jit_kernel(
 
     def ref_program(A, B):
         import torch
+        if dtypeAccum in ("float16", "bfloat16"):
+            return tilelang.testing.matmul_naive(A, B, getattr(torch, dtypeAccum),
+                                                 getattr(torch, out_dtype))
         C = torch.matmul(A.to(torch.float), B.to(torch.float))
         C = C.to(torch.__getattribute__(out_dtype))
         return C

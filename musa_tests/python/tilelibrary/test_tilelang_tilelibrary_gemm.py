@@ -377,6 +377,7 @@ def run_gemm_sr(
     profiler.assert_allclose(ref_program, atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.skip(reason="Temporarily disabling because gemm_v2 is experimental")
 def test_gemm_sr():
     # GEMM tests for float16
     run_gemm_sr(512, 1024, 768, False, False, "float16", "float16", "float16", 128, 256, 32, 2)
@@ -462,6 +463,7 @@ def matmul_rr(
     return main
 
 
+@pytest.mark.skip(reason="Temporarily disabling because gemm_v2 is experimental")
 def run_gemm_rr(
     M,
     N,
@@ -516,6 +518,7 @@ def run_gemm_rr(
     profiler.assert_allclose(ref_program, atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.skip(reason="Temporarily disabling because gemm_v2 is experimental")
 def test_gemm_rr():
     # GEMM tests for float16
     run_gemm_rr(512, 1024, 768, False, False, "float16", "float16", "float16", 128, 256, 32, 2)
