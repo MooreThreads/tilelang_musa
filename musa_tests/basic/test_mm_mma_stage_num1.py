@@ -1,6 +1,6 @@
 import itertools
 import pytest
-import mm_mma_stage_num1
+from . import mm_mma_stage_num1
 
 MNK_CASES = [
     (256, 256, 128),
