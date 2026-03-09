@@ -725,12 +725,9 @@ private:
 
     auto [barrier_id, thread_count] =
         GetOrCreateBarrier(key, extent_tx, extent_ty, extent_tz);
-    if (thread_count % 32 != 0) {
-      // TODO(lei): This is a workaround for the case where the thread count is
-      // not a multiple of 32. we should enhance the pass to analysis index
-      // instead of buffer expression etc.
-      return Stmt();
-    }
+    ICHECK_EQ(thread_count % 32, 0)
+        << "thread_count must be a multiple of warp size (32), got "
+        << thread_count;
 
     // Create new sync call with barrier info
     Array<PrimExpr> new_args = {StringImm(scope),
@@ -750,7 +747,29 @@ private:
     size_t barrier_id =
         barrier_id_map_.size() +
         static_cast<size_t>(ReservedNamedBarriers::kFirstUsedBarrier);
-    size_t thread_count = extent_tx * extent_ty * extent_tz;
+
+    // On MUSA/CUDA, __musa_async_arrive is warp-level: each warp with at least
+    // one active thread contributes exactly 1 arrive, regardless of how many
+    // threads within that warp are active (predicated execution still counts).
+    // The number of active warps is determined by the *maximum* linear thread
+    // index: linear_idx = tz * Dy * Dx + ty * Dx + tx.
+    // We must NOT simply divide the active thread count by warp_size, because
+    // active threads may span more warps than that implies (e.g. threadIdx.x in
+    // [0,15] with threadIdx.y in [0,3] gives 64 active threads but 4 warps).
+    int64_t block_dim_x = 1, block_dim_y = 1;
+    if (tx_->dom.defined()) {
+      if (const auto *n = tx_->dom->extent.as<IntImmNode>())
+        block_dim_x = n->value;
+    }
+    if (ty_->dom.defined()) {
+      if (const auto *n = ty_->dom->extent.as<IntImmNode>())
+        block_dim_y = n->value;
+    }
+    int64_t max_linear_idx = key.tz_max * block_dim_y * block_dim_x +
+                             key.ty_max * block_dim_x + key.tx_max;
+    static constexpr int64_t kWarpSize = 32;
+    size_t thread_count =
+        static_cast<size_t>((max_linear_idx / kWarpSize + 1) * kWarpSize);
 
     barrier_id_map_[key] = barrier_id;
     thread_count_map_[key] = thread_count;

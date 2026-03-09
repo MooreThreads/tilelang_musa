@@ -29,6 +29,14 @@ class PartialSyncPrepass : public StmtExprMutator {
 public:
   Stmt VisitStmt_(const EvaluateNode *op) final {
     if (const auto *call = op->value.as<CallNode>()) {
+      // Drop the syncthreads that was paired with a collected shuffle_elect
+      // block (we'll emit one unified syncthreads later).
+      if (drop_next_syncthreads_ &&
+          call->op.same_as(builtin::tvm_storage_sync()) &&
+          call->args.size() == 1) {
+        drop_next_syncthreads_ = false;
+        return Stmt();
+      }
       if (call->op.same_as(builtin::tvm_storage_sync())) {
         // rewrite partial thread sync IR from `tvm_storage_sync("shared.dyn",
         // barrier_id, count)` to `musa_sync(offset, count)`
@@ -43,14 +51,43 @@ public:
     return StmtExprMutator::VisitStmt_(op);
   }
 
+  // Collect existing if(tl_shuffle_elect){barrier_inits} blocks emitted by
+  // earlier passes (e.g. LowerPHIntrin) so they can be merged into the single
+  // consolidated prologue emitted by RewritePartialSyncToBarrier.
+  Stmt VisitStmt_(const IfThenElseNode *op) final {
+    if (!op->else_case && IsBarrierInitShuffleElect(op->condition)) {
+      collected_init_stmts_.push_back(
+          StmtExprMutator::VisitStmt(op->then_case));
+      drop_next_syncthreads_ = true;
+      return Stmt();
+    }
+    return StmtExprMutator::VisitStmt_(op);
+  }
+
   const std::unordered_map<int, PrimExpr> &partial_syncs() const {
     return partial_syncs_;
+  }
+  const Array<Stmt> &collected_init_stmts() const {
+    return collected_init_stmts_;
   }
   int barrier_count() const { return barrier_count_; }
   int sync_count() const { return sync_count_; }
   int placeholder_count() const { return placeholder_count_; }
 
 private:
+  // Match only if(tl_shuffle_elect(0)) — barrier init blocks from LowerPHIntrin.
+  // Blocks with other args (e.g. tl_shuffle_elect(128) for TMA store warps)
+  // must not be removed.
+  static bool IsBarrierInitShuffleElect(const PrimExpr &cond) {
+    if (const auto *call = cond.as<CallNode>()) {
+      if (!call->op.same_as(tl_shuffle_elect()) || call->args.empty())
+        return false;
+      if (const auto *imm = call->args[0].as<IntImmNode>())
+        return imm->value == 0;
+    }
+    return false;
+  }
+
   PrimExpr VisitExpr_(const CallNode *call) final {
     if (call->op.same_as(barrier_id_placeholder())) {
       placeholder_count_++;
@@ -86,6 +123,8 @@ private:
   }
 
   std::unordered_map<int, PrimExpr> partial_syncs_;
+  Array<Stmt> collected_init_stmts_;
+  bool drop_next_syncthreads_{false};
   int barrier_count_{0};
   int sync_count_{0};
   int placeholder_count_{0};
@@ -109,26 +148,6 @@ public:
     }
     return StmtExprMutator::VisitStmt_(op);
   }
-
-  // insert T.ptx_init_barrier_thread_count
-  Stmt VisitStmt_(const IfThenElseNode *op) final {
-    // Find first tl_shuffle_elect
-    if (!init_inserted_ && ShouldInsertInit(op->condition)) {
-      auto then_case = StmtExprMutator::VisitStmt(op->then_case);
-      Array<Stmt> stmts = MakeInitStmts();
-      stmts.push_back(then_case);
-      auto seq = stmts.size() == 1 ? stmts[0] : SeqStmt(stmts);
-      init_inserted_ = true;
-      Stmt else_case;
-      if (op->else_case) {
-        else_case = StmtExprMutator::VisitStmt(op->else_case.value());
-      }
-      return IfThenElse(op->condition, seq, else_case);
-    }
-    return StmtExprMutator::VisitStmt_(op);
-  }
-
-  bool init_inserted() const { return init_inserted_; }
 
   // Make statements for barrier inits
   Array<Stmt> MakeInitStmts() {
@@ -158,28 +177,8 @@ private:
     return Evaluate(new_call);
   }
 
-  bool ShouldInsertInit(const PrimExpr &cond) {
-    if (const auto *call = cond.as<CallNode>()) {
-      if (call->op.same_as(tl_shuffle_elect()) && !call->args.empty()) {
-        if (const auto *imm = call->args[0].as<IntImmNode>()) {
-          return imm->value == 0;
-        }
-      }
-    } else if (const auto *eq = cond.as<EQNode>()) {
-      if (const auto *rhs = eq->b.as<IntImmNode>()) {
-        if (rhs->value == 0)
-          return true;
-      } else if (const auto *lhs = eq->a.as<IntImmNode>()) {
-        if (lhs->value == 0)
-          return true;
-      }
-    }
-    return false;
-  }
-
   std::vector<std::pair<int, PrimExpr>> barrier_inits_;
   int base_count_{0};
-  bool init_inserted_{false};
 };
 
 class BarrierIdPlaceholderRewriter : public StmtExprMutator {
@@ -296,6 +295,18 @@ PrimFunc RewritePartialSyncToBarrier(PrimFunc f) {
     body = rewriter(std::move(body));
   }
 
+  // Collect all barrier init stmts into one list so they can be emitted under
+  // a single if(shuffle_elect) guard with a single __syncthreads.
+
+  // 1. Inits collected from existing shuffle_elect blocks (e.g. TMA barriers
+  //    emitted by LowerPHIntrin). PartialSyncPrepass already removed those
+  //    blocks and their paired syncthreads from the body.
+  Array<Stmt> all_init_stmts;
+  for (const auto &s : prepass.collected_init_stmts()) {
+    all_init_stmts.push_back(s);
+  }
+
+  // 2. Partial-thread sync barrier inits.
   if (prepass.sync_count() != 0) {
     std::vector<std::pair<int, PrimExpr>> syncs(prepass.partial_syncs().begin(),
                                                 prepass.partial_syncs().end());
@@ -311,18 +322,23 @@ PrimFunc RewritePartialSyncToBarrier(PrimFunc f) {
 
     MbarrierSyncRewriter rewriter(base_count, std::move(barrier_inits));
     body = rewriter(std::move(body));
-    // If MbarrierSyncRewriter has not previously inserted barrier inits
-    if (!rewriter.init_inserted()) {
-      auto cond = Call(DataType::Bool(), tl_shuffle_elect(),
-                       {IntImm(DataType::Int(32), 0)});
-      auto init_stmts = rewriter.MakeInitStmts();
-      auto seq = init_stmts.size() == 1 ? init_stmts[0] : SeqStmt(init_stmts);
-      prefix.push_back(IfThenElse(cond, seq));
-      if (!prefix.empty()) {
-        prefix.push_back(body);
-        body = SeqStmt(prefix);
-      }
+    for (const auto &s : rewriter.MakeInitStmts()) {
+      all_init_stmts.push_back(s);
     }
+  }
+
+  // 3. Emit a single consolidated prologue.
+  if (!all_init_stmts.empty()) {
+    auto cond = Call(DataType::Bool(), tl_shuffle_elect(),
+                     {IntImm(DataType::Int(32), 0)});
+    auto seq = all_init_stmts.size() == 1 ? all_init_stmts[0]
+                                           : SeqStmt(all_init_stmts);
+    prefix.push_back(IfThenElse(cond, seq));
+    Stmt mem_sync = Evaluate(Call(DataType::Handle(), builtin::tvm_storage_sync(),
+                                  {StringImm("shared")}));
+    prefix.push_back(mem_sync);
+    prefix.push_back(body);
+    body = SeqStmt(prefix);
   }
 
   body = CreateBarrierRewriter::Rewrite(std::move(body),
