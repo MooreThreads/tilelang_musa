@@ -28,10 +28,10 @@ int GetArchInt(Target target) {
   ICHECK(arch_str.size() >= 3);
   if (TargetIsCuda(target)) {
     ICHECK_EQ(arch_str.compare(0, 3, "sm_"), 0)
-          << "cuda's arch string must start with sm_";
+        << "cuda's arch string must start with sm_";
   } else if (TargetIsMusa(target)) {
     ICHECK_EQ(arch_str.compare(0, 3, "mp_"), 0)
-          << "musa's arch string must start with mp_";
+        << "musa's arch string must start with mp_";
   }
   return std::stoi(arch_str.substr(3));
 }
@@ -128,10 +128,14 @@ bool TargetHasAsyncCopy(Target target) {
   return false;
 }
 bool TargetHasLdmatrix(Target target) {
-  if (!TargetIsCuda(target))
-    return false;
-  int arch = GetArchInt(target);
-  return arch >= 75;
+  if (TargetIsCuda(target)) {
+    int arch = GetArchInt(target);
+    return arch >= 75;
+  } else if (TargetIsMusa(target)) {
+    int arch = GetArchInt(target);
+    return arch == 22;
+  }
+  return false;
 }
 
 bool TargetHasStmatrix(Target target) {

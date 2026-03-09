@@ -11,6 +11,8 @@ namespace detail {
 TL_DEVICE constexpr int default_warp_size() {
 #if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_DEVICE_COMPILE__)
   return 64;
+#elif defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__ <= 220)
+  return 128;
 #else
   return 32;
 #endif

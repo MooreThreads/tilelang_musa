@@ -213,6 +213,26 @@ Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
   return block_layout;
 }
 
+Fragment makeGemmQY2FragmentC(const int block_m, const int block_n,
+                              const int warp_m, const int warp_n,
+                              const int element_size) {
+  if (element_size == 64) {
+    ICHECK(false) << "Not supported";
+  }
+  ICHECK(block_m % warp_m == 0);
+  ICHECK(block_n % warp_n == 0);
+  ICHECK(warp_m % 32 == 0) << "warp_m=" << warp_m;
+  ICHECK(warp_n % 32 == 0) << "warp_n=" << warp_n;
+  auto base_layout = makeGemmFragment4x8()->Repeat({2, 2}, true);
+  auto warp_8x32_layout = base_layout->Repeat({1, 2}, false, false);
+  auto warp_32x32_layout = warp_8x32_layout->Repeat({4, 1}, false, false);
+  auto warp_layout = warp_32x32_layout->Repeat(
+      {block_m / warp_m, block_n / warp_n}, true, false);
+  auto block_layout =
+      warp_layout->Repeat({warp_m / 32, warp_n / 32}, false, false);
+  return block_layout;
+}
+
 Fragment makeGemmFragmentCLinear(const int block_m, const int block_n,
                                  const int block_size) {
   IterVar i = make_itervar("i", block_m);
