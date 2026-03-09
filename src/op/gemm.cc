@@ -281,7 +281,7 @@ GemmInst GemmNode::GetGemmInst(int block_size, Target target) const {
     return GemmInst::kWGMMA;
   } else if (TargetIsCDNA(target)) {
     return GemmInst::kMFMA;
-  } else if (TargetIsCuda(target)) {
+  } else if (TargetIsCuda(target) || TargetIsQY2(target)) {
     return GemmInst::kMMA;
   } else if (TargetIsPH1(target)) {
     return allow_sqmma ? GemmInst::kSQMMA : GemmInst::kFMA;
@@ -302,6 +302,9 @@ std::pair<int, int> GemmWarpPolicyNode::ComputeWarpPartition(
   int kNPerWarp = 8;  // Columns processed by a single warp
   if (TargetIsVolta(target)) {
     kNPerWarp = 16;
+  } else if (TargetIsQY2(target)) {
+    kMPerWarp = 32;
+    kNPerWarp = 32;
   }
   if (TargetIsPH1(target) && gemm_inst == GemmInst::kSQMMA) {
     kMPerWarp = 4;
@@ -759,7 +762,7 @@ Stmt GemmNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       << "clear_accum must be a constant Bool type, got " << clear_accum;
   ss << ", " << bool(clear_accum_bool.value());
   if ((TargetIsCuda(T.target) && (GetArchInt(T.target) >= 75)) ||
-      (TargetIsPH1(T.target))) {
+      (TargetIsPH1(T.target)) || (TargetIsQY2(T.target))) {
     ss << ", " << stride_A << ", " << stride_B;
     ss << ", " << offset_A << ", " << offset_B;
   }
@@ -983,6 +986,30 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
       const int64_t b_mat_stride = *as_const_int(B->shape[dim_B - 2]);
       const int64_t b_mat_continuous = *as_const_int(B->shape[dim_B - 1]);
       results.Set(B, makeGemmLayoutLinear(b_mat_stride, b_mat_continuous));
+    }
+  } else if (TargetIsQY2(T.target)) {
+    ICHECK(C.scope() == "local.fragment")
+        << "MMA only supports C in local.fragment scope, got " << C.scope();
+
+    auto fragment =
+        makeGemmQY2FragmentC(M, N, M / warp_m, N / warp_n, C->dtype.bits());
+    results.Set(C, fragment->BindThreadRange(thread_range));
+
+    if (A.scope() == "shared" || A.scope() == "shared.dyn") {
+      int dim_A = A->shape.size();
+      const int64_t mat_stride = *as_const_int(A->shape[dim_A - 2]);
+      const int64_t mat_continuous = *as_const_int(A->shape[dim_A - 1]);
+      results.Set(A, makeGemmLayoutLinear(mat_stride, mat_continuous));
+    } else {
+      ICHECK(0);
+    }
+    if (B.scope() == "shared" || B.scope() == "shared.dyn") {
+      int dim_B = B->shape.size();
+      const int64_t mat_stride = *as_const_int(B->shape[dim_B - 2]);
+      const int64_t mat_continuous = *as_const_int(B->shape[dim_B - 1]);
+      results.Set(B, makeGemmLayoutLinear(mat_stride, mat_continuous));
+    } else {
+      ICHECK(0);
     }
   } else if (gemm_inst == GemmInst::kTCGEN5MMA) {
     ICHECK(C.scope() == "shared.tmem")
