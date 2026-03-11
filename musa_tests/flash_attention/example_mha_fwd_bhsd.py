@@ -176,6 +176,9 @@ def flashattn(batch,
                     base = t * L
                     for l in T.vectorized(L):
                         P_shared[i, base + l] = acc_s_cast[i, l * 8 + t]
+
+                T.sync_warp()
+
                 Rescale(acc_o, scores_scale)
                 MMA1(V, P_shared, V_shared, acc_o, k, by, bz)
             for i in T.Parallel(block_M):
