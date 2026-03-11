@@ -367,22 +367,38 @@ TL_DEVICE bfloat16_t shfl_sync(unsigned mask, bfloat16_t val, int srcLane) {
   return bfloat16_t(r);
 }
 
-#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
 TL_DEVICE float2 vec_max_f2(float2 a, float2 b) {
   float2 out;
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
   mute::max(out, a, b);
+#else
+  out.x = max(a.x, b.x);
+  out.y = max(a.y, b.y);
+#endif
   return out;
 }
 
 TL_DEVICE float4 vec_max_f4(float4 a, float4 b) {
   float4 out;
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
   mute::max(out, a, b);
+#else
+  out.x = max(a.x, b.x);
+  out.y = max(a.y, b.y);
+  out.z = max(a.z, b.z);
+  out.w = max(a.w, b.w);
+#endif
   return out;
 }
 
 TL_DEVICE float2 vec_sum_f2(float2 a, float2 b) {
   float2 out;
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
   mute::add(out, a, b);
+#else
+  out.x = a.x + b.x;
+  out.y = a.y + b.y;
+#endif
   return out;
 }
 
@@ -399,15 +415,24 @@ TL_DEVICE float4 vec_sum_f4(float4 a, float4 b) {
 
 TL_DEVICE float2 vec_exp2_f2(float2 a) {
   float2 out;
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
   mute::fast_exp2(out, a);
+#else
+  out.x = exp2f(a.x);
+  out.y = exp2f(a.y);
+#endif
   return out;
 }
 
 TL_DEVICE float4 vec_exp2_f4(float4 a) {
   float4 out;
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
   mute::fast_exp2(out, a);
+#else
+  out.x = exp2f(a.x);
+  out.y = exp2f(a.y);
+#endif
   return out;
 }
-#endif // defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
 
 } // namespace tl
