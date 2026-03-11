@@ -1,6 +1,9 @@
 import torch
+import tilelang
 import tilelang.testing
 import tilelang.language as T
+
+tilelang.disable_cache()
 
 str2dtype = {
     "float32": torch.float32,
@@ -112,30 +115,38 @@ def run_vectorized_cast_fp8(src_dtype_str: str, dst_dtype_str: str, check_str: s
 def test_vectorized_cast():
     # fp32 -> fp16
     run_vectorized_cast("float32", "float16", "__float22half2_rn", 2)
-    run_vectorized_cast("float32", "float16", "__float22half2_rn", 4)
+    run_vectorized_cast("float32", "float16", "__float42half4_rn", 4)
+    run_vectorized_cast("float32", "float16", "__float42half4_rn", 8)
 
     # fp16 -> fp32
     run_vectorized_cast("float16", "float32", "__half22float2", 2)
-    run_vectorized_cast("float16", "float32", "__half22float2", 4)
+    run_vectorized_cast("float16", "float32", "__half42float4", 4)
+    run_vectorized_cast("float16", "float32", "__half42float4", 8)
 
     # fp32 -> bf16
     run_vectorized_cast("float32", "bfloat16", "__float22bfloat162_rn", 2)
-    run_vectorized_cast("float32", "bfloat16", "__float22bfloat162_rn", 4)
+    run_vectorized_cast("float32", "bfloat16", "__float42bfloat164_rn", 4)
+    run_vectorized_cast("float32", "bfloat16", "__float42bfloat164_rn", 8)
 
     # bf16 -> fp32
     run_vectorized_cast("bfloat16", "float32", "__bfloat1622float2", 2)
-    run_vectorized_cast("bfloat16", "float32", "__bfloat1622float2", 4)
+    run_vectorized_cast("bfloat16", "float32", "__bfloat1642float4", 4)
+    run_vectorized_cast("bfloat16", "float32", "__bfloat1642float4", 8)
 
 
 def test_vectorized_cast_fp8():
     # fp32 -> fp8_e4m3
     run_vectorized_cast_fp8("float32", "float8_e4m3", "__musa_cvt_float2_to_fp8x2", 2)
-    run_vectorized_cast_fp8("float32", "float8_e4m3", "__musa_cvt_float2_to_fp8x2", 4)
+    run_vectorized_cast_fp8("float32", "float8_e4m3", "__musa_cvt_float4_to_fp8x4", 4)
+    run_vectorized_cast_fp8("float32", "float8_e4m3", "__musa_cvt_float4_to_fp8x4", 8)
 
     # fp32 -> fp8_e5m2
     run_vectorized_cast_fp8("float32", "float8_e5m2", "__musa_cvt_float2_to_fp8x2", 2)
-    run_vectorized_cast_fp8("float32", "float8_e5m2", "__musa_cvt_float2_to_fp8x2", 4)
+    run_vectorized_cast_fp8("float32", "float8_e5m2", "__musa_cvt_float4_to_fp8x4", 4)
+    run_vectorized_cast_fp8("float32", "float8_e5m2", "__musa_cvt_float4_to_fp8x4", 8)
 
 
 if __name__ == "__main__":
+    test_vectorized_cast()
+    test_vectorized_cast_fp8()
     tilelang.testing.main()

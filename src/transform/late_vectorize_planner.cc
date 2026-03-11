@@ -32,11 +32,46 @@ private:
   explicit LateVectorizePlanner(arith::Analyzer *analyzer)
       : IRMutatorWithAnalyzer(analyzer) {}
 
-  bool ContainsMusaBurstOp(const Stmt &body) const {
+  static bool IsMusaSIMDCastCandidate(DataType from_ty, DataType to_ty) {
+    if (from_ty.lanes() != 1 || to_ty.lanes() != 1) {
+      return false;
+    }
+    if (from_ty == to_ty) {
+      return false;
+    }
+    // Keep this list aligned with vectorized cast paths in codegen_musa.cc.
+    // Supported vector intrinsics currently include:
+    //   1) fp16 <-> fp32
+    //   2) bf16 <-> fp32
+    //   3) fp32 -> fp8 (e4m3/e5m2)
+    if ((from_ty.is_float16() && to_ty.is_float() && to_ty.bits() == 32) ||
+        (from_ty.is_float() && from_ty.bits() == 32 && to_ty.is_float16())) {
+      return true;
+    }
+    if ((from_ty.is_bfloat16() && to_ty.is_float() && to_ty.bits() == 32) ||
+        (from_ty.is_float() && from_ty.bits() == 32 && to_ty.is_bfloat16())) {
+      return true;
+    }
+    if (from_ty.is_float() && from_ty.bits() == 32 &&
+        (to_ty.is_float8_e4m3() || to_ty.is_float8_e5m2())) {
+      return true;
+    }
+    return false;
+  }
+
+  bool ContainsMusaSIMDOpportunity(const Stmt &body) const {
     bool found = false;
     PostOrderVisit(body, [&](const ObjectRef &obj) {
       if (found) {
         return;
+      }
+      if (const auto *store = obj.as<BufferStoreNode>()) {
+        if (const auto *cast = store->value.as<CastNode>()) {
+          if (IsMusaSIMDCastCandidate(cast->value.dtype(), cast->dtype)) {
+            found = true;
+            return;
+          }
+        }
       }
       const auto *call = obj.as<CallNode>();
       if (!call) {
@@ -58,7 +93,7 @@ private:
     if (for_node->kind == ForKind::kVectorized) {
       return for_node;
     }
-    if (!ContainsMusaBurstOp(for_node->body)) {
+    if (!ContainsMusaSIMDOpportunity(for_node->body)) {
       return for_node;
     }
     return VectorizeLoop(for_node);

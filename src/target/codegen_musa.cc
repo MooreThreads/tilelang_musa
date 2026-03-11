@@ -994,221 +994,93 @@ void CodeGenTileLangMUSA::VisitExpr_(const CastNode *op, std::ostream &os) {
   this->PrintType(target_ty, stream);
   stream << ' ' << sret << ";\n";
   std::string src = SSAGetID(PrintExpr(op->value), from_ty);
+  int lanes = from_ty.lanes();
+
+  auto PrintVectorizedCast = [&](const std::string &cast_func,
+                                 const std::string &src_type,
+                                 const std::string &dst_type, int chunk_lanes,
+                                 const std::string &extra_args = "",
+                                 bool src_needs_reinterpret = false,
+                                 bool dst_needs_reinterpret = false) {
+    ICHECK_GT(chunk_lanes, 0);
+    ICHECK_EQ(lanes % chunk_lanes, 0);
+
+    std::string src_cast = src_needs_reinterpret
+                               ? "reinterpret_cast<" + src_type + "*>"
+                               : "(" + src_type + "*)";
+    std::string dst_cast = dst_needs_reinterpret
+                               ? "reinterpret_cast<" + dst_type + "*>"
+                               : "(" + dst_type + "*)";
+
+    int num_chunks = lanes / chunk_lanes;
+    for (int i = 0; i < num_chunks; ++i) {
+      PrintIndent();
+      stream << "(" << dst_cast << "(&" << sret << "))[" << i
+             << "] = " << cast_func << "((" << src_cast << "(&" << src << "))["
+             << i << "]" << extra_args << ");\n";
+    }
+    os << sret;
+  };
 
   // Handle conversion between float16 and float32
-  if (from_ty.is_float16() && target_ty.is_float()) {
-    // Use __half22float2 for vectorized conversion (half2 -> float2)
-    if (from_ty.lanes() == 2 && target_ty.lanes() == 2) {
-      // half2 -> float2
-      PrintIndent();
-      stream << sret << " = __half22float2(*(half2*)(&(" << src << ")));\n";
-      os << sret;
+  if (from_ty.is_float16() && target_ty.is_float() && target_ty.bits() == 32) {
+    if (lanes == 2) {
+      PrintVectorizedCast("__half22float2", "half2", "float2", 2);
       return;
-    } else if (from_ty.lanes() == 4 && target_ty.lanes() == 4) {
-      // half4 -> float4
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[0] = "
-             << "__half22float2(*(half2*)(&(" << src << ")));\n";
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[1] = "
-             << "__half22float2(*((half2*)(&(" << src << "))+1));\n";
-      os << sret;
-      return;
-    } else if (from_ty.lanes() == 8 && target_ty.lanes() == 8) {
-      // half8 -> float8
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[0] = "
-             << "__half22float2(*(half2*)(&(" << src << ")));\n";
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[1] = "
-             << "__half22float2(*((half2*)(&(" << src << "))+1));\n";
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[2] = "
-             << "__half22float2(*((half2*)(&(" << src << "))+2));\n";
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[3] = "
-             << "__half22float2(*((half2*)(&(" << src << "))+3));\n";
-      os << sret;
+    } else if (lanes == 4 || lanes == 8) {
+      PrintVectorizedCast("__half42float4", "__half4", "float4", 4);
       return;
     }
-  } else if (from_ty.is_float() && target_ty.is_float16()) {
-    // Use __float22half2_rn for vectorized conversion (float2 -> half2)
-    if (from_ty.lanes() == 2 && target_ty.lanes() == 2) {
-      // float2 -> half2
-      PrintIndent();
-      stream << "*(half2*)(&(" << sret << ")) = __float22half2_rn(*(float2*)(&("
-             << src << ")));\n";
-      os << sret;
+  }
+
+  if (from_ty.is_float() && from_ty.bits() == 32 && target_ty.is_float16()) {
+    if (lanes == 2) {
+      PrintVectorizedCast("__float22half2_rn", "float2", "half2", 2);
       return;
-    } else if (from_ty.lanes() == 4 && target_ty.lanes() == 4) {
-      // float4 -> half4
-      PrintIndent();
-      stream << "((half2*)(&" << sret << "))[0] = "
-             << "__float22half2_rn(*(float2*)(&(" << src << ")));\n";
-      PrintIndent();
-      stream << "((half2*)(&" << sret << "))[1] = "
-             << "__float22half2_rn(*((float2*)(&(" << src << "))+1));\n";
-      os << sret;
-      return;
-    } else if (from_ty.lanes() == 8 && target_ty.lanes() == 8) {
-      // float8 -> half8
-      PrintIndent();
-      stream << "((half2*)(&" << sret << "))[0] = "
-             << "__float22half2_rn(*(float2*)(&(" << src << ")));\n";
-      PrintIndent();
-      stream << "((half2*)(&" << sret << "))[1] = "
-             << "__float22half2_rn(*((float2*)(&(" << src << "))+1));\n";
-      PrintIndent();
-      stream << "((half2*)(&" << sret << "))[2] = "
-             << "__float22half2_rn(*((float2*)(&(" << src << "))+2));\n";
-      PrintIndent();
-      stream << "((half2*)(&" << sret << "))[3] = "
-             << "__float22half2_rn(*((float2*)(&(" << src << "))+3));\n";
-      os << sret;
+    } else if (lanes == 4 || lanes == 8) {
+      PrintVectorizedCast("__float42half4_rn", "float4", "__half4", 4);
       return;
     }
   }
 
   // Handle conversion between bfloat16 and float32
-  if (from_ty.is_bfloat16() && target_ty.is_float()) {
-    // Use __bfloat1622float2 for vectorized conversion (bfloat162 -> float2)
-    if (from_ty.lanes() == 2 && target_ty.lanes() == 2) {
-      // bfloat162 -> float2
-      PrintIndent();
-      stream << sret
-             << " = __bfloat1622float2(*reinterpret_cast<__mt_bfloat162*>(&("
-             << src << ")));\n";
-      os << sret;
+  if (from_ty.is_bfloat16() && target_ty.is_float() && target_ty.bits() == 32) {
+    if (lanes == 2) {
+      PrintVectorizedCast("__bfloat1622float2", "__mt_bfloat162", "float2", 2,
+                          "", true, false);
       return;
-    } else if (from_ty.lanes() == 4 && target_ty.lanes() == 4) {
-      // bfloat162x2 -> float4
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[0] = "
-             << "__bfloat1622float2(*reinterpret_cast<__mt_bfloat162*>(&("
-             << src << ")));\n";
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[1] = "
-             << "__bfloat1622float2(*(reinterpret_cast<__mt_bfloat162*>(&("
-             << src << "))+1));\n";
-      os << sret;
-      return;
-    } else if (from_ty.lanes() == 8 && target_ty.lanes() == 8) {
-      // bfloat162x4 -> float8
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[0] = "
-             << "__bfloat1622float2(*reinterpret_cast<__mt_bfloat162*>(&("
-             << src << ")));\n";
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[1] = "
-             << "__bfloat1622float2(*(reinterpret_cast<__mt_bfloat162*>(&("
-             << src << "))+1));\n";
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[2] = "
-             << "__bfloat1622float2(*(reinterpret_cast<__mt_bfloat162*>(&("
-             << src << "))+2));\n";
-      PrintIndent();
-      stream << "((float2*)(&" << sret << "))[3] = "
-             << "__bfloat1622float2(*(reinterpret_cast<__mt_bfloat162*>(&("
-             << src << "))+3));\n";
-      os << sret;
+    } else if (lanes == 4 || lanes == 8) {
+      PrintVectorizedCast("__bfloat1642float4", "__mt_bfloat164", "float4", 4,
+                          "", true, false);
       return;
     }
-  } else if (from_ty.is_float() && target_ty.is_bfloat16()) {
-    // Use __float22bfloat162_rn for vectorized conversion (float2 -> bfloat162)
-    if (from_ty.lanes() == 2 && target_ty.lanes() == 2) {
-      // float2 -> bfloat162
-      PrintIndent();
-      stream << "*reinterpret_cast<__mt_bfloat162*>(&(" << sret
-             << ")) = __float22bfloat162_rn(*(float2*)(&(" << src << ")));\n";
-      os << sret;
+  }
+
+  if (from_ty.is_float() && from_ty.bits() == 32 && target_ty.is_bfloat16()) {
+    if (lanes == 2) {
+      PrintVectorizedCast("__float22bfloat162_rn", "float2", "__mt_bfloat162",
+                          2, "", false, true);
       return;
-    } else if (from_ty.lanes() == 4 && target_ty.lanes() == 4) {
-      // float4 -> bfloat162x2
-      PrintIndent();
-      stream << "(reinterpret_cast<__mt_bfloat162*>(&" << sret << "))[0] = "
-             << "__float22bfloat162_rn(*(float2*)(&(" << src << ")));\n";
-      PrintIndent();
-      stream << "(reinterpret_cast<__mt_bfloat162*>(&" << sret << "))[1] = "
-             << "__float22bfloat162_rn(*((float2*)(&(" << src << "))+1));\n";
-      os << sret;
-      return;
-    } else if (from_ty.lanes() == 8 && target_ty.lanes() == 8) {
-      // float8 -> bfloat162x4
-      PrintIndent();
-      stream << "(reinterpret_cast<__mt_bfloat162*>(&" << sret << "))[0] = "
-             << "__float22bfloat162_rn(*(float2*)(&(" << src << ")));\n";
-      PrintIndent();
-      stream << "(reinterpret_cast<__mt_bfloat162*>(&" << sret << "))[1] = "
-             << "__float22bfloat162_rn(*((float2*)(&(" << src << "))+1));\n";
-      PrintIndent();
-      stream << "(reinterpret_cast<__mt_bfloat162*>(&" << sret << "))[2] = "
-             << "__float22bfloat162_rn(*((float2*)(&(" << src << "))+2));\n";
-      PrintIndent();
-      stream << "(reinterpret_cast<__mt_bfloat162*>(&" << sret << "))[3] = "
-             << "__float22bfloat162_rn(*((float2*)(&(" << src << "))+3));\n";
-      os << sret;
+    } else if (lanes == 4 || lanes == 8) {
+      PrintVectorizedCast("__float42bfloat164_rn", "float4", "__mt_bfloat164",
+                          4, "", false, true);
       return;
     }
   }
 
   // Handle conversion from float32 to float8 (E4M3/E5M2)
-  if (from_ty.is_float() &&
+  if (from_ty.is_float() && from_ty.bits() == 32 &&
       (target_ty.is_float8_e4m3() || target_ty.is_float8_e5m2())) {
-    // FP32 -> FP8: Use __musa_cvt_float2_to_fp8x2 for vectorized conversion
-    // (float2 -> fp8x2)
-    if (from_ty.lanes() == 2 && target_ty.lanes() == 2) {
-      // float2 -> fp8x2
-      PrintIndent();
-      stream << "*reinterpret_cast<__mt_fp8x2_storage_t*>(&(" << sret
-             << ")) = __musa_cvt_float2_to_fp8x2(*reinterpret_cast<float2*>(&("
-             << src << ")), __MT_SATFINITE, "
-             << (target_ty.is_float8_e4m3() ? "__MT_E4M3" : "__MT_E5M2")
-             << ");\n";
-      os << sret;
+    std::string extra_args =
+        std::string(", __MT_SATFINITE, ") +
+        (target_ty.is_float8_e4m3() ? "__MT_E4M3" : "__MT_E5M2");
+    if (lanes == 2) {
+      PrintVectorizedCast("__musa_cvt_float2_to_fp8x2", "float2",
+                          "__mt_fp8x2_storage_t", 2, extra_args, false, true);
       return;
-    } else if (from_ty.lanes() == 4 && target_ty.lanes() == 4) {
-      // float4 -> fp8x4
-      PrintIndent();
-      stream << "((__mt_fp8x2_storage_t*)(&" << sret << "))[0] = "
-             << "__musa_cvt_float2_to_fp8x2(*(float2*)(&(" << src
-             << ")), __MT_SATFINITE, "
-             << (target_ty.is_float8_e4m3() ? "__MT_E4M3" : "__MT_E5M2")
-             << ");\n";
-      PrintIndent();
-      stream << "((__mt_fp8x2_storage_t*)(&" << sret << "))[1] = "
-             << "__musa_cvt_float2_to_fp8x2(*((float2*)(&(" << src
-             << "))+1), __MT_SATFINITE, "
-             << (target_ty.is_float8_e4m3() ? "__MT_E4M3" : "__MT_E5M2")
-             << ");\n";
-      os << sret;
-      return;
-    } else if (from_ty.lanes() == 8 && target_ty.lanes() == 8) {
-      // float8 -> fp8x8
-      PrintIndent();
-      stream << "((__mt_fp8x2_storage_t*)(&" << sret << "))[0] = "
-             << "__musa_cvt_float2_to_fp8x2(*(float2*)(&(" << src
-             << ")), __MT_SATFINITE, "
-             << (target_ty.is_float8_e4m3() ? "__MT_E4M3" : "__MT_E5M2")
-             << ");\n";
-      PrintIndent();
-      stream << "((__mt_fp8x2_storage_t*)(&" << sret << "))[1] = "
-             << "__musa_cvt_float2_to_fp8x2(*((float2*)(&(" << src
-             << "))+1), __MT_SATFINITE, "
-             << (target_ty.is_float8_e4m3() ? "__MT_E4M3" : "__MT_E5M2")
-             << ");\n";
-      PrintIndent();
-      stream << "((__mt_fp8x2_storage_t*)(&" << sret << "))[2] = "
-             << "__musa_cvt_float2_to_fp8x2(*((float2*)(&(" << src
-             << "))+2), __MT_SATFINITE, "
-             << (target_ty.is_float8_e4m3() ? "__MT_E4M3" : "__MT_E5M2")
-             << ");\n";
-      PrintIndent();
-      stream << "((__mt_fp8x2_storage_t*)(&" << sret << "))[3] = "
-             << "__musa_cvt_float2_to_fp8x2(*((float2*)(&(" << src
-             << "))+3), __MT_SATFINITE, "
-             << (target_ty.is_float8_e4m3() ? "__MT_E4M3" : "__MT_E5M2")
-             << ");\n";
-      os << sret;
+    } else if (lanes == 4 || lanes == 8) {
+      PrintVectorizedCast("__musa_cvt_float4_to_fp8x4", "float4",
+                          "__mt_fp8x4_storage_t", 4, extra_args, false, true);
       return;
     }
   }
