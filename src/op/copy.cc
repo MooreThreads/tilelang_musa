@@ -252,7 +252,10 @@ template <typename T> static Array<T> ReverseArray(Array<T> array) {
  * reads optional arguments:
  * - args[2] (IntImm): coalesced width (stored only if > 0),
  * - args[3] (Bool): disable TMA lowering flag,
- * - args[4] (IntImm): eviction policy.
+ * - args[4] (IntImm): eviction policy,
+ * - args[5] (Bool): force async-copy lowering,
+ * - args[6] (PrimExpr): robust options object carrying an optional source
+ *   robust descriptor.
  *
  * Preconditions:
  * - `args` must contain at least two Call-compatible PrimExpr entries
@@ -293,6 +296,17 @@ Copy::Copy(Array<PrimExpr> args, BufferMap vmap) {
   }
   if (args.size() >= 6) {
     node->force_async_copy = Downcast<Bool>(args[5]);
+  }
+  if (args.size() >= 7) {
+    const auto *call = args[6].as<CallNode>();
+    ICHECK(call && call->op.same_as(tl::make_robust_desc()))
+        << "Expected tl.make_robust_desc call, but got " << args[6];
+    if (!call->args.empty()) {
+      ICHECK_EQ(call->args.size(), 2)
+          << "tl.make_robust_desc expects 0 or 2 argument(s), but got "
+          << call->args.size();
+      node->src_robust_desc = args[6];
+    }
   }
   data_ = std::move(node);
 }
@@ -885,6 +899,9 @@ CopyInst CopyNode::GetCopyInst(Target target, bool disable_tma_lower,
                                const LayoutMap &layout_map,
                                arith::Analyzer *analyzer,
                                bool buffer_oob = false) const {
+  if (src_robust_desc.defined()) {
+    return CopyInst::kNormal;
+  }
   // disable_tma_lower is from pass_configs
   // when tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER is True,
   // we will not use tma for bulk load/store
@@ -1016,6 +1033,15 @@ Stmt CopyNode::LowerNormalCopy(const LowerArgs &T,
     Stmt body = vectorized_thread_loop;
     if (par_op->GetPredicate(T.thread_var).defined()) {
       body = IfThenElse(par_op->GetPredicate(T.thread_var).value(), body);
+    }
+    if (node.src_robust_desc.defined()) {
+      ICHECK(TargetIsMusa(T.target))
+          << "src_robust_desc is only supported when targeting MUSA.";
+      ICHECK(node.src.scope() == "global")
+          << "src_robust_desc requires a global-memory source, but got `"
+          << node.src.scope() << "`.";
+      body = AttrStmt(node.src->data, tl::attr::kSourceRobustDesc,
+                      node.src_robust_desc, body);
     }
     if (node.force_async_copy) {
       body = AttrStmt(make_zero(DataType::Int(32)), attr::kForceAsyncCopy, 1,
@@ -2333,11 +2359,12 @@ Array<PrimExpr> TMAIm2ColDesc::EncodeCallArgs() const {
 
 // Register the Copy operation with TVM's TIR system
 // This makes the copy operation available for use in TVM programs
-// - Takes 5 inputs: src_buffer, dst_buffer, coalesced_width, disable_tma,
-// eviction_policy
+// - Takes a variable number of inputs: src_buffer, dst_buffer,
+//   coalesced_width, disable_tma, eviction_policy, force_async_copy,
+//   optional robust_options
 // - Marked as opaque since it has side effects (memory writes)
 TIR_REGISTER_TL_OP(Copy, copy)
-    .set_num_inputs(5)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 

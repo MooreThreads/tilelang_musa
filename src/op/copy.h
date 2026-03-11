@@ -90,8 +90,9 @@ public:
   Buffer src, dst;                   // Source and destination buffers
   Array<Range> src_range, dst_range; // Ranges for each dimension in src and dst
   IntImm coalesced_width; // Width (in elements) for coalesced memory access
-  Bool disable_tma = Bool(false); // Whether to disable TMA acceleration
+  Bool disable_tma = Bool(false);      // Whether to disable TMA acceleration
   Bool force_async_copy = Bool(false); // Enable WS async copy lowering
+  PrimExpr src_robust_desc; // Optional robust descriptor for global source
 
   mutable ParallelOp par_op_; // Optional associated parallelization operator
 
@@ -112,7 +113,8 @@ public:
         .def_ro("src_range", &CopyNode::src_range)
         .def_ro("dst_range", &CopyNode::dst_range)
         .def_ro("coalesced_width", &CopyNode::coalesced_width)
-        .def_ro("force_async_copy", &CopyNode::force_async_copy);
+        .def_ro("force_async_copy", &CopyNode::force_async_copy)
+        .def_ro("src_robust_desc", &CopyNode::src_robust_desc);
   }
 
   /*!

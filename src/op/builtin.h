@@ -31,6 +31,7 @@ static constexpr const char *kWarpSpecializationProducerThreads =
     "tl.warp_specialization_producer_threads";
 static constexpr const char *kLocalVarInit = "tl.local_var_init";
 static constexpr const char *kForceAsyncCopy = "tl.force_async_copy";
+static constexpr const char *kSourceRobustDesc = "tl.source_robust_desc";
 static constexpr const char *kMusaReduceBarrierInit =
     "tl.musa_reduce_barrier_init";
 } // namespace attr
@@ -158,6 +159,7 @@ TVM_DLL const Op &ieee_fdiv();
  *
  */
 TVM_DLL const Op &create_tma_descriptor();
+TVM_DLL const Op &make_robust_desc();
 
 /*!
  * \brief tvm intrinsics for TMADescriptor creation for image to column load
@@ -221,6 +223,7 @@ TVM_DLL const Op &tma_load_im2col();
  *
  */
 TVM_DLL const Op &tma_store();
+TVM_DLL const Op &musa_cp_async_robust();
 
 /*!
  * \brief Placeholder for barrier id before numbering.

@@ -130,6 +130,8 @@ private:
       Op::GetAttrMap<bool>("musa.need_warp_shuffle");
   // Map descriptor var to encoded TMA args for tile shape lookup
   std::unordered_map<ffi::String, ffi::Array<PrimExpr>> tma_descriptor_args_;
+  // Current robust descriptor attached to source-side copy lowering.
+  PrimExpr current_src_robust_desc_;
 
   // The name of the barrier array in shared memory
   const std::string barrier_name_ = "barrier";

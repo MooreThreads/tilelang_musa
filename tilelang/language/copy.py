@@ -13,7 +13,8 @@ def copy(src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
          coalesced_width: int | None = None,
          disable_tma: bool = False,
          force_async_copy: bool = False,
-         eviction_policy: Literal["evict_normal", "evict_first", "evict_last"] | None = None):
+         eviction_policy: Literal["evict_normal", "evict_first", "evict_last"] | None = None,
+         src_robust_desc: tir.PrimExpr | None = None):
     """Copy data between memory regions.
 
     Args:
@@ -48,8 +49,8 @@ def copy(src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
     src_extent = get_extent(src)
     dst_extent = get_extent(dst)
     # Combine the nested if statements into a single if statement as suggested by SIM102
-    if (src_extent is None and dst_extent is None and isinstance(src, tir.BufferLoad) and
-            isinstance(dst, tir.BufferLoad)):
+    if (src_robust_desc is None and src_extent is None and dst_extent is None and
+            isinstance(src, tir.BufferLoad) and isinstance(dst, tir.BufferLoad)):
         # check if the case is like this:
         # copy(buffer_a[i], buffer_b[i]) where both are BufferLoad nodes
         # In this case, lower it to a simple BufferStore: buffer_b[i] = buffer_a[i]
@@ -77,6 +78,13 @@ def copy(src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
 
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
+    if isinstance(src_robust_desc, tir.Var) and T.has_let_value(src_robust_desc):
+        src_robust_desc = T.get_let_value(src_robust_desc)
+    if src_robust_desc is not None and not (isinstance(
+            src_robust_desc, tir.Call) and src_robust_desc.op.same_as(
+                tir.op.Op.get("tl.make_robust_desc")) and len(src_robust_desc.args) == 2):
+        raise ValueError("src_robust_desc must be created by T.make_robust_desc(addr, size_bytes)")
+    robust_desc = src_robust_desc if src_robust_desc is not None else T.make_robust_desc()
 
     if coalesced_width is None:
         coalesced_width = -1  # PrimExpr can not be None
@@ -84,8 +92,8 @@ def copy(src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
         eviction_policy = 0
     else:
         eviction_policy = {"evict_normal": 0, "evict_first": 1, "evict_last": 2}[eviction_policy]
-    return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), src, dst, coalesced_width,
-                           disable_tma, eviction_policy, force_async_copy)
+    args = [src, dst, coalesced_width, disable_tma, eviction_policy, force_async_copy, robust_desc]
+    return tir.call_intrin("handle", tir.op.Op.get("tl.copy"), *args)
 
 
 def c2d_im2col(img: tir.Buffer,

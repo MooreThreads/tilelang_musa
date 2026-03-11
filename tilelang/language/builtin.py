@@ -83,6 +83,19 @@ def create_tma_descriptor(*args):
     return tir.call_intrin("handle", tir.op.Op.get("tl.create_tma_descriptor"), *args)
 
 
+def make_robust_desc(*args):
+    """Create a robust source descriptor for MUSA MP31 copy lowering.
+
+    Args:
+        *args: Either `(addr, size_bytes)` for a concrete robust descriptor, or
+            `()` for an internal empty descriptor marker.
+
+    Returns:
+        tir.Call: A handle to the created robust descriptor.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.make_robust_desc"), *args)
+
+
 def tma_load(*args):
     """Perform a Tensor Memory Access (TMA) load operation.
 
