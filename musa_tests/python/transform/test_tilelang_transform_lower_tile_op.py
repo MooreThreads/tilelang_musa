@@ -68,7 +68,8 @@ def test_loop_tail_split(block_M, block_N, block_K, threads, vec_load_b, dtype):
 
     with tvm.transform.PassContext():
         mod = tvm.tir.transform.BindTarget(auto_target)(before())
-        mod = tl.transform.LowerTileOp()(mod)
+        with tvm.target.Target(auto_target):
+            mod = tl.transform.LowerTileOp()(mod)
         mod = tvm.tir.transform.Simplify()(mod)
     ref_mod = tvm.tir.transform.BindTarget(auto_target)(after())
     ref_mod = tvm.tir.transform.Simplify()(ref_mod)
