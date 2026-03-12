@@ -24,6 +24,18 @@ namespace codegen {
 using namespace tvm::tl::codegen;
 using namespace ffi;
 
+namespace {
+
+std::pair<PrimExpr, PrimExpr> GetRobustDescArgs(const PrimExpr &desc) {
+  const auto *call = desc.as<CallNode>();
+  ICHECK(call && call->op.same_as(tl::make_robust_desc()))
+      << "Expected tl.make_robust_desc call, but got " << desc;
+  ICHECK_EQ(call->args.size(), 2);
+  return {call->args[0], call->args[1]};
+}
+
+} // namespace
+
 struct MUSAMath {
   std::string operator()(DataType t, std::string name) const {
     if (t.is_float()) {
@@ -1392,7 +1404,28 @@ void CodeGenTileLangMUSA::VisitExpr_(const CallNode *op, std::ostream &os) {
   auto print_mbarrier_id = [&](PrimExpr barrier_id) {
     return this->PrintExpr(barrier_id);
   };
-  if (op->op.same_as(builtin::ptx_cp_async())) {
+  if (op->op.same_as(tl::musa_cp_async_robust())) {
+    std::string dst = this->PrintExpr(op->args[0]);
+    std::string dst_offset = this->PrintExpr(op->args[1]);
+    std::string src = this->PrintExpr(op->args[2]);
+    std::string src_offset = this->PrintExpr(op->args[3]);
+    std::string size = this->PrintExpr(op->args[4]);
+    std::string robust_base = this->PrintExpr(op->args[5]);
+    std::string robust_size = this->PrintExpr(op->args[6]);
+    if (op->args.size() == 7) {
+      this->PrintIndent();
+      this->stream << "tl::cp_async_gs_robust<" << size << ">(" << dst << "+"
+                   << dst_offset << ", " << src << "+" << src_offset << ", "
+                   << robust_base << ", " << robust_size << ");\n";
+    } else {
+      std::string condition = this->PrintExpr(op->args[7]);
+      this->PrintIndent();
+      this->stream << "tl::cp_async_gs_robust_conditional<" << size << ">("
+                   << dst << "+" << dst_offset << ", " << src << "+"
+                   << src_offset << ", " << robust_base << ", " << robust_size
+                   << ", " << condition << ");\n";
+    }
+  } else if (op->op.same_as(builtin::ptx_cp_async())) {
     std::string dst = this->PrintExpr(op->args[0]);
     std::string dst_offset = this->PrintExpr(op->args[1]);
     std::string src = this->PrintExpr(op->args[2]);
@@ -2638,6 +2671,12 @@ void CodeGenTileLangMUSA::VisitStmt_(const AttrStmtNode *op) {
     const VarNode *buffer = op->node.as<VarNode>();
     const StringImmNode *shape_str = op->value.as<StringImmNode>();
     fragment_shapes[buffer] = shape_str->value;
+  } else if (op->attr_key == tl::attr::kSourceRobustDesc) {
+    PrimExpr prev_desc = current_src_robust_desc_;
+    current_src_robust_desc_ = op->value;
+    this->VisitStmt(op->body);
+    current_src_robust_desc_ = prev_desc;
+    return;
   } else if (op->attr_key == tir::attr::fragment_layout) {
     const VarNode *buffer = op->node.as<VarNode>();
     const StringImmNode *layout_str = op->value.as<StringImmNode>();
@@ -2805,6 +2844,85 @@ void CodeGenTileLangMUSA::VisitExpr_(const BufferLoadNode *op,
   PrimExpr index = op->indices[0];
   Var buffer_var = op->buffer->data;
   DataType element_dtype = op->buffer->dtype;
+
+  if (current_src_robust_desc_.defined() && op->buffer.scope() == "global") {
+    ICHECK_NE(value_dtype.bits(), 4)
+        << "Robust load does not support 4-bit packed dtypes.";
+    ICHECK(!(value_dtype.bits() == 1 && value_dtype.is_int()))
+        << "Robust load does not support bit-packed boolean loads.";
+    auto [robust_base, robust_size] =
+        GetRobustDescArgs(current_src_robust_desc_);
+    std::string robust_base_str = PrintExpr(robust_base);
+    std::string robust_size_str = PrintExpr(robust_size);
+
+    auto ptr_cast = [this](DataType pointed_to) {
+      std::ostringstream ptr_os;
+      ptr_os << "(";
+      PrintType(pointed_to, ptr_os);
+      ptr_os << "*)";
+      return ptr_os.str();
+    };
+
+    auto get_buffer_ptr = [&](DataType pointed_to,
+                              const PrimExpr &ptr_index) -> std::string {
+      std::string vid = GetVarID(buffer_var.get());
+      std::string buffer_str = vid;
+      if (!HandleTypeMatch(buffer_var.get(), element_dtype)) {
+        std::stringstream temp;
+        temp << "(" << ptr_cast(element_dtype) << vid << ")";
+        buffer_str = temp.str();
+      }
+      std::string index_str = PrintExpr(ptr_index);
+      std::ostringstream ptr_os;
+      if (pointed_to == element_dtype) {
+        ptr_os << "(" << buffer_str << " + " << index_str << ")";
+      } else {
+        ptr_os << "(" << ptr_cast(pointed_to) << "(" << buffer_str << " + "
+               << index_str << "))";
+      }
+      return ptr_os.str();
+    };
+
+    auto print_robust_load = [&](DataType load_type, const PrimExpr &ptr_index,
+                                 std::ostream &out) {
+      std::ostringstream type_os;
+      PrintType(load_type, type_os);
+      out << "tl::robust_load<" << type_os.str() << ">("
+          << get_buffer_ptr(load_type, ptr_index) << ", " << robust_base_str
+          << ", " << robust_size_str << ")";
+    };
+
+    int lanes = op->dtype.lanes();
+    if (value_dtype.lanes() == element_dtype.lanes()) {
+      print_robust_load(op->dtype, index, os);
+      return;
+    }
+
+    bool can_vector_load = false;
+    arith::PVar<PrimExpr> base;
+    if (arith::ramp(base, 1, lanes).Match(index)) {
+      can_vector_load = true;
+    }
+    if (value_dtype.is_float4_e2m1fn() && lanes != 1) {
+      can_vector_load = false;
+    }
+    if (can_vector_load) {
+      print_robust_load(op->dtype, base.Eval(), os);
+      return;
+    }
+
+    std::ostringstream svalue_expr;
+    DataType elem_type = op->dtype.element_of();
+    for (int i = 0; i < lanes; ++i) {
+      PrimExpr lane_index =
+          Shuffle({index}, {make_const(DataType::Int(32), i)});
+      std::ostringstream value_temp;
+      print_robust_load(elem_type, lane_index, value_temp);
+      PrintVecElemLoadExpr(op->dtype, i, value_temp.str(), svalue_expr);
+    }
+    os << svalue_expr.str();
+    return;
+  }
 
   int lanes = op->dtype.lanes();
   // declare type.

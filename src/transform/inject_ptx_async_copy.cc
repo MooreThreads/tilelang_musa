@@ -44,6 +44,13 @@ public:
   using StmtMutator::VisitStmt_;
 
   Stmt VisitStmt_(const AttrStmtNode *attr) {
+    if (attr->attr_key == tl::attr::kSourceRobustDesc) {
+      PrimExpr prev_desc = current_src_robust_desc_;
+      current_src_robust_desc_ = attr->value;
+      auto body = this->VisitStmt(attr->body);
+      current_src_robust_desc_ = prev_desc;
+      return AttrStmt(attr->node, attr->attr_key, attr->value, body);
+    }
     if (attr->attr_key == tir::attr::async_scope) {
       bool in_async_prev = in_async;
       in_async = true;
@@ -63,7 +70,8 @@ public:
         bool has_cp_async = false;
         PostOrderVisit(body, [&](const ObjectRef &obj) {
           if (const auto *call = obj.as<CallNode>()) {
-            if (call->op.same_as(builtin::ptx_cp_async())) {
+            if (call->op.same_as(builtin::ptx_cp_async()) ||
+                call->op.same_as(tl::musa_cp_async_robust())) {
               has_cp_async = true;
             }
           }
@@ -315,11 +323,26 @@ private:
     Array<PrimExpr> args = {store->buffer->data,
                             mul(dst_offset, PrimExpr(index_factor)),
                             load->buffer->data, src_offset, PrimExpr(bytes)};
+    Op op = tvm::tir::builtin::ptx_cp_async();
+    if (current_src_robust_desc_.defined()) {
+      op = tl::musa_cp_async_robust();
+      auto [robust_base, robust_size] =
+          GetRobustDescArgs(current_src_robust_desc_);
+      args.push_back(robust_base);
+      args.push_back(robust_size);
+    }
     if (predicated) {
       args.push_back(predicate_value);
     }
-    return Evaluate(
-        Call(store->buffer->dtype, tvm::tir::builtin::ptx_cp_async(), args));
+    return Evaluate(Call(store->buffer->dtype, op, args));
+  }
+
+  std::pair<PrimExpr, PrimExpr> GetRobustDescArgs(const PrimExpr &desc) const {
+    const auto *call = desc.as<CallNode>();
+    ICHECK(call && call->op.same_as(tl::make_robust_desc()))
+        << "Expected tl.make_robust_desc call, but got " << desc;
+    ICHECK_EQ(call->args.size(), 2);
+    return {call->args[0], call->args[1]};
   }
 
   Optional<PrimExpr> GetUnitStrideBase(const PrimExpr &expr, const Var &var) {
@@ -341,6 +364,7 @@ private:
   arith::Analyzer analyzer_;
   bool in_async{false};
   bool in_force_async_copy_{false};
+  PrimExpr current_src_robust_desc_;
 };
 
 using namespace tir::transform;
