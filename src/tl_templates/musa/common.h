@@ -128,6 +128,17 @@ uint32_t cast_smem_ptr_to_uint(void const *const ptr) {
   return static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
 }
 
+// DP4A: 4x8-bit dot-product-accumulate using MUSA __dp4a intrinsic.
+// Takes pointers to packed 4x int8 inputs (a, b) and a 32-bit accumulator (c),
+// computes dot(a[0:4], b[0:4]) + *c and stores the result back through c.
+template <typename InDatatype, typename OutDatatype>
+TL_DEVICE void DP4A(InDatatype *a, InDatatype *b, OutDatatype *c) {
+  const int a_int = *((int *)a);
+  const int b_int = *((int *)b);
+  const int c_int = *((int *)c);
+  *c = __dp4a(a_int, b_int, c_int);
+}
+
 // using mutlass abs function for half_t
 TL_PATCH TL_DEVICE half_t __habs(const half_t x) { return abs(x); }
 
