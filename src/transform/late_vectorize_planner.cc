@@ -32,6 +32,10 @@ private:
   explicit LateVectorizePlanner(arith::Analyzer *analyzer)
       : IRMutatorWithAnalyzer(analyzer) {}
 
+  static bool IsMusaFP8Type(DataType t) {
+    return t.is_float8_e4m3() || t.is_float8_e5m2();
+  }
+
   static bool IsMusaSIMDCastCandidate(DataType from_ty, DataType to_ty) {
     if (from_ty.lanes() != 1 || to_ty.lanes() != 1) {
       return false;
@@ -43,7 +47,8 @@ private:
     // Supported vector intrinsics currently include:
     //   1) fp16 <-> fp32
     //   2) bf16 <-> fp32
-    //   3) fp32 -> fp8 (e4m3/e5m2)
+    //   3) fp32 <-> fp8 (e4m3/e5m2)
+    //   4) fp16 <-> fp8 (e4m3/e5m2)
     if ((from_ty.is_float16() && to_ty.is_float() && to_ty.bits() == 32) ||
         (from_ty.is_float() && from_ty.bits() == 32 && to_ty.is_float16())) {
       return true;
@@ -54,6 +59,13 @@ private:
     }
     if (from_ty.is_float() && from_ty.bits() == 32 &&
         (to_ty.is_float8_e4m3() || to_ty.is_float8_e5m2())) {
+      return true;
+    }
+    if (IsMusaFP8Type(from_ty) && to_ty.is_float() && to_ty.bits() == 32) {
+      return true;
+    }
+    if ((from_ty.is_float16() && IsMusaFP8Type(to_ty)) ||
+        (IsMusaFP8Type(from_ty) && to_ty.is_float16())) {
       return true;
     }
     return false;
