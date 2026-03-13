@@ -1613,13 +1613,14 @@ void CodeGenTileLangMUSA::VisitExpr_(const CallNode *op, std::ostream &os) {
     auto eviction_policy =
         this->eviction_policy_names_
             [op->args[op->args.size() - 1].as<IntImmNode>()->value];
+    auto desc = op->args[0];
+    auto smem = op->args[1];
+    auto sg = GetTMASwizzleGranularity(desc);
     if (eviction_policy != "EVICT_NORMAL") {
       ss << "tl::tma_store<tl::CacheHintSm90::" << eviction_policy << ">(";
     } else {
-      ss << "tl::tma_store(";
+      ss << "tl::tma_store<" << ToString(sg) << ">(";
     }
-    auto desc = op->args[0];
-    auto smem = op->args[1];
     auto tile_shape = GetTMASmemBox(desc);
     size_t coord_start = 2;
     size_t coord_end = op->args.size() - 2;
