@@ -48,13 +48,25 @@ def copy(src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
 
     src_extent = get_extent(src)
     dst_extent = get_extent(dst)
-    # Combine the nested if statements into a single if statement as suggested by SIM102
-    if (src_robust_desc is None and src_extent is None and dst_extent is None and
-            isinstance(src, tir.BufferLoad) and isinstance(dst, tir.BufferLoad)):
-        # check if the case is like this:
-        # copy(buffer_a[i], buffer_b[i]) where both are BufferLoad nodes
-        # In this case, lower it to a simple BufferStore: buffer_b[i] = buffer_a[i]
-        return tir.BufferStore(dst.buffer, src, dst.indices)
+    if isinstance(src_robust_desc, tir.Var) and T.has_let_value(src_robust_desc):
+        src_robust_desc = T.get_let_value(src_robust_desc)
+    if src_robust_desc is not None and not (isinstance(
+            src_robust_desc, tir.Call) and src_robust_desc.op.same_as(
+                tir.op.Op.get("tl.make_robust_desc")) and len(src_robust_desc.args) == 2):
+        raise ValueError("src_robust_desc must be created by T.make_robust_desc(addr, size_bytes)")
+
+    # check if the case is like this:
+    # copy(buffer_a[i], buffer_b[i]) where both are BufferLoad nodes
+    # In this case, lower it to a simple BufferStore that runs in the current
+    # thread context. When robust metadata is provided, attach it directly to
+    # the scalar load instead of lowering through tl.copy, which would repartition
+    # the scalar copy across threads.
+    if src_extent is None and dst_extent is None and isinstance(src, tir.BufferLoad) and isinstance(
+            dst, tir.BufferLoad):
+        store = tir.BufferStore(dst.buffer, src, dst.indices)
+        if src_robust_desc is None:
+            return store
+        return tir.AttrStmt(src.buffer.data, "tl.source_robust_desc", src_robust_desc, store)
 
     assert src_extent or dst_extent, "Can't deduce copy extents from args"
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
@@ -78,12 +90,6 @@ def copy(src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
 
     src = _to_region(src, "r")
     dst = _to_region(dst, "w")
-    if isinstance(src_robust_desc, tir.Var) and T.has_let_value(src_robust_desc):
-        src_robust_desc = T.get_let_value(src_robust_desc)
-    if src_robust_desc is not None and not (isinstance(
-            src_robust_desc, tir.Call) and src_robust_desc.op.same_as(
-                tir.op.Op.get("tl.make_robust_desc")) and len(src_robust_desc.args) == 2):
-        raise ValueError("src_robust_desc must be created by T.make_robust_desc(addr, size_bytes)")
     robust_desc = src_robust_desc if src_robust_desc is not None else T.make_robust_desc()
 
     if coalesced_width is None:
