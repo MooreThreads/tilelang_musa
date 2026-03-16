@@ -666,12 +666,14 @@ public:
                 Map<Var, Buffer> buffer_data_to_buffer,
                 const WarpSpecializedRoleMarker &marker,
                 bool mbarrier_only = false,
+                bool disable_thread_storage_sync = false,
                 Optional<PrimExpr> simt_virtual_extent = Optional<PrimExpr>(),
                 Optional<PrimExpr> simt_physical_extent = Optional<PrimExpr>())
       : is_emitting_producer_(is_emitting_producer),
         buffer_data_to_buffer_(std::move(buffer_data_to_buffer)),
         marker_(marker), thread_var_(thread_iv->var),
         mbarrier_only_(mbarrier_only),
+        disable_thread_storage_sync_(disable_thread_storage_sync),
         simt_virtual_extent_(std::move(simt_virtual_extent)),
         simt_physical_extent_(std::move(simt_physical_extent)) {}
 
@@ -818,7 +820,7 @@ private:
           if (has_simt_copy) {
             block_stmt.push_back(makeCpAsyncBarrier(release_barrier_id));
             has_simt_copy_ = true;
-            if (force_async_copy) {
+            if (force_async_copy && !disable_thread_storage_sync_) {
               auto wait_cnt = IntImm(DataType::Int(32), 0);
               block_stmt.push_back(Evaluate(Call(
                   DataType::Void(), builtin::ptx_wait_group(), {wait_cnt})));
@@ -1351,6 +1353,7 @@ private:
   std::vector<LoopInfo> loop_stack_;
   Var thread_var_;
   bool mbarrier_only_ = false;
+  bool disable_thread_storage_sync_ = false;
   Optional<PrimExpr> simt_virtual_extent_;
   Optional<PrimExpr> simt_physical_extent_;
   PipelineInfo pipeline_info_;
@@ -1361,14 +1364,19 @@ private:
 class WarpSpecializedRewriter : public StmtExprMutator {
 public:
   WarpSpecializedRewriter(bool disable_warp_specialized,
-                          bool disable_shuffle_elect, bool has_warp_arrive,
+                          bool disable_shuffle_elect,
+                          bool disable_thread_storage_sync,
+                          bool has_warp_arrive,
                           bool single_warp_producer_barrier)
       : disable_warp_specialized_(disable_warp_specialized),
         disable_shuffle_elect_(disable_shuffle_elect),
+        disable_thread_storage_sync_(disable_thread_storage_sync),
         has_warp_arrive_(has_warp_arrive),
         single_warp_producer_barrier_(single_warp_producer_barrier) {}
   static PrimFunc Substitute(PrimFunc f, bool disable_warp_specialized,
-                             bool disable_shuffle_elect, bool has_warp_arrive,
+                             bool disable_shuffle_elect,
+                             bool disable_thread_storage_sync,
+                             bool has_warp_arrive,
                              bool single_warp_producer_barrier) {
     // Check if function only uses threadIdx.x before proceeding
     if (!ThreadTagChecker::HasOnlyThreadIdxX(f)) {
@@ -1382,7 +1390,8 @@ public:
 
     auto T =
         WarpSpecializedRewriter(disable_warp_specialized, disable_shuffle_elect,
-                                has_warp_arrive, single_warp_producer_barrier);
+                                disable_thread_storage_sync, has_warp_arrive,
+                                single_warp_producer_barrier);
     T.buffer_lca_ = DetectBufferAccessLCA(f);
     for (auto [buffer, _] : T.buffer_lca_)
       T.buffer_data_to_buffer_.Set(buffer->data, buffer);
@@ -1445,7 +1454,8 @@ private:
 
     if (disable_warp_specialized_) {
       WSCodeEmitter mbarrier_emitter(true, thread_iv_, buffer_data_to_buffer_,
-                                     marker, true);
+                                     marker, true,
+                                     disable_thread_storage_sync_);
       auto code = mbarrier_emitter(block->body);
       int num_barriers = mbarrier_emitter.num_barriers_;
       Array<PrimExpr> barrier_num_threads;
@@ -1506,9 +1516,10 @@ private:
     }
 
     WSCodeEmitter producer(true, thread_iv_, buffer_data_to_buffer_, marker,
-                           false, simt_virtual_extent, simt_physical_extent);
+                           false, disable_thread_storage_sync_,
+                           simt_virtual_extent, simt_physical_extent);
     WSCodeEmitter consumer(false, thread_iv_, buffer_data_to_buffer_, marker,
-                           false);
+                           false, disable_thread_storage_sync_);
     Stmt producer_code = producer(block->body);
     Stmt consumer_code = consumer(block->body);
 
@@ -1571,6 +1582,7 @@ private:
   bool need_update_thread_extent_ = false;
   bool disable_warp_specialized_ = false;
   bool disable_shuffle_elect_ = false;
+  bool disable_thread_storage_sync_ = false;
   bool has_warp_arrive_ = false;
   bool single_warp_producer_barrier_ = false;
 };
@@ -1583,6 +1595,8 @@ tvm::transform::Pass WarpSpecialized() {
         ctx->GetConfig<Bool>(kDisableWarpSpecialized, Bool(false)).value();
     bool disable_shuffle_elect =
         ctx->GetConfig<Bool>(kDisableShuffleElect, Bool(false)).value();
+    bool disable_thread_storage_sync =
+        ctx->GetConfig<Bool>(kDisableThreadStorageSync, Bool(false)).value();
     bool has_warp_arrive = false;
     bool single_warp_producer_barrier = false;
     if (auto target = f->GetAttr<Target>(tvm::attr::kTarget)) {
@@ -1593,7 +1607,8 @@ tvm::transform::Pass WarpSpecialized() {
 
     if (!warp_specialized) {
       return WarpSpecializedRewriter::Substitute(
-          f, disable_warp_specialized, disable_shuffle_elect, has_warp_arrive,
+          f, disable_warp_specialized, disable_shuffle_elect,
+          disable_thread_storage_sync, has_warp_arrive,
           single_warp_producer_barrier);
     } else {
       auto node = ffi::String("default");

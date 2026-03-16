@@ -10,6 +10,11 @@ PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
 }
 
+PASS_CONFIGS_DISABLE_THREAD_STORAGE_SYNC = {
+    **PASS_CONFIGS,
+    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+}
+
 
 def require_musa():
     if not hasattr(torch, "musa") or not torch.musa.is_available():
@@ -121,6 +126,23 @@ def kernel_with_vectorized_scalar_force_async_copy_to_shared():
     return main
 
 
+@tilelang.jit(target="musa", out_idx=[1], pass_configs=PASS_CONFIGS_DISABLE_THREAD_STORAGE_SYNC)
+def kernel_with_vectorized_scalar_force_async_copy_to_shared_disable_thread_storage_sync():
+
+    @T.prim_func
+    def main(
+            src: T.Tensor([4], T.float32),
+            out: T.Tensor([4], T.float32),
+    ):
+        with T.Kernel(1, threads=1) as _:
+            src_shared = T.alloc_shared([4], T.float32)
+            for v in T.vectorized(4):
+                T.copy(src[v], src_shared[v], force_async_copy=True)
+            T.copy(src_shared, out)
+
+    return main
+
+
 @tilelang.jit(target="musa", out_idx=[1], pass_configs=PASS_CONFIGS)
 def kernel_with_vectorized_scalar_robust_force_async_copy_to_shared():
 
@@ -179,12 +201,31 @@ def test_vectorized_scalar_force_async_copy_to_shared_source():
     code = kernel_with_vectorized_scalar_force_async_copy_to_shared().get_kernel_source()
 
     assert "tl::cp_async_gs<16>" in code
+    assert "tl::cp_async_wait<0>();" in code
+
+
+def test_vectorized_scalar_force_async_copy_to_shared_source_disable_thread_storage_sync():
+    code = kernel_with_vectorized_scalar_force_async_copy_to_shared_disable_thread_storage_sync(
+    ).get_kernel_source()
+
+    assert "tl::cp_async_gs<16>" in code
+    assert "tl::cp_async_wait<0>();" not in code
 
 
 def test_vectorized_scalar_robust_force_async_copy_to_shared_source():
     code = kernel_with_vectorized_scalar_robust_force_async_copy_to_shared().get_kernel_source()
 
     assert "tl::cp_async_gs_robust<16>" in code
+    assert "tl::cp_async_wait<0>();" in code
+    assert "tl::robust_load" not in code
+
+
+def test_vectorized_scalar_robust_force_async_copy_to_shared_source_disable_thread_storage_sync():
+    code = kernel_with_vectorized_scalar_robust_force_async_copy_to_shared_disable_thread_storage_sync(
+    ).get_kernel_source()
+
+    assert "tl::cp_async_gs_robust<16>" in code
+    assert "tl::cp_async_wait<0>();" not in code
     assert "tl::robust_load" not in code
 
 
