@@ -16,6 +16,18 @@ template <> struct normalize_atomic_type<half_t> {
   using type = half;
 };
 
+template <> struct normalize_atomic_type<bfloat16_t> {
+  using type = __mt_bfloat16;
+};
+
+template <> struct normalize_atomic_type<int64_t> {
+  using type = long long int;
+};
+
+template <> struct normalize_atomic_type<uint64_t> {
+  using type = unsigned long long int;
+};
+
 template <typename T1, typename T2>
 TL_DEVICE void AtomicMax(T1 &ref, T2 val, int memory_order = 0) {
   using NT1 = typename normalize_atomic_type<T1>::type;
@@ -48,6 +60,7 @@ TL_DEVICE T1 AtomicMinRet(T1 &ref, T2 val, int memory_order = 0) {
 
 template <typename T1, typename T2>
 TL_DEVICE void AtomicAdd(T1 &ref, T2 val, int memory_order = 0) {
+  static_assert(!std::is_same_v<T1, int64_t>, "atomicAdd for int64_t is not supported");
   using NT1 = typename normalize_atomic_type<T1>::type;
   T1 *address = &ref;
   atomicAdd(reinterpret_cast<NT1 *>(address), static_cast<NT1>(val));
