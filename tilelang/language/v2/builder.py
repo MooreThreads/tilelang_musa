@@ -245,6 +245,9 @@ class Builder(BaseBuilder):
             pass
         elif isinstance(val, tvm.tir.stmt.BufferStore):
             tir.buffer_store(val.buffer, val.value, val.indices, val.predicate)
+        elif isinstance(val, tvm.tir.stmt.AttrStmt):
+            with self.with_frame(tir.attr(val.node, val.attr_key, val.value)):
+                self.eval(val.body)
         elif not isinstance(val, tvm.tir.Buffer):
             raise TypeError(f"Unsupported eval value: {val} of type {type(val)}")
 
