@@ -390,7 +390,7 @@ def run_ctypes_dynamic_shape(M,
 
     matmul_kernel(tensor_a, tensor_b, tensor_c)
 
-    tensor_ref_c = torch.matmul(tensor_a.to(torch.float), tensor_b.to(torch.float)).to(out_dtype)
+    tensor_ref_c = tilelang.testing.matmul_naive(tensor_a, tensor_b, out_dtype, out_dtype)
     tilelang.testing.torch_assert_close(
         tensor_c, tensor_ref_c, atol=1e-2, rtol=1e-2, max_mismatched_ratio=0.05)
 
@@ -409,5 +409,4 @@ def test_ctypes_dynamic_shape():
 
 
 if __name__ == "__main__":
-    # tilelang.testing.main()
-    test_gemm_f16f16f16_nn()
+    test_ctypes_dynamic_shape()

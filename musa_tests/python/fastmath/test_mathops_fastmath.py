@@ -22,7 +22,7 @@ def get_mathop_lines(source, mathop_name):
 def check_fastmath_usage(source, mathop_name, expect_fastmath=False):
     """Check source for fastmath/non-fastmath versions"""
     fastmath_pattern = rf"__({mathop_name}f?)\b"
-    non_fastmath_pattern = rf"(?<!__)({mathop_name}f?)\b"
+    non_fastmath_pattern = rf"(?<!__)({mathop_name}f?)"
 
     fastmath_matches = re.findall(fastmath_pattern, source)
     non_fastmath_matches = re.findall(non_fastmath_pattern, source)
