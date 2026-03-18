@@ -86,12 +86,31 @@ def kernel_with_scalar_robust_copy_to_shared():
     return main
 
 
+@tilelang.jit(target="musa", out_idx=[1], pass_configs=PASS_CONFIGS)
+def kernel_with_scalar_robust_force_async_copy_to_shared():
+
+    @T.prim_func
+    def main(
+            src: T.Tensor([4], T.float32),
+            out: T.Tensor([4], T.float32),
+    ):
+        with T.Kernel(1, threads=4) as _:
+            tid = T.get_thread_binding()
+            src_shared = T.alloc_shared([4], T.float32)
+            robust_desc = T.make_robust_desc(T.address_of(src[1]), 8)
+            T.copy(src[tid], src_shared[tid], force_async_copy=True, src_robust_desc=robust_desc)
+            out[tid] = src_shared[tid]
+
+    return main
+
+
 @pytest.mark.parametrize(
     "kernel_builder",
     [
         kernel_with_robust_load,
         kernel_with_robust_async_copy,
         kernel_with_scalar_robust_copy_to_shared,
+        kernel_with_scalar_robust_force_async_copy_to_shared,
     ],
 )
 def test_robust_copy_numerical(kernel_builder):
@@ -111,6 +130,13 @@ def test_robust_copy_numerical(kernel_builder):
 def test_scalar_robust_copy_to_shared_get_tir():
     func = kernel_with_scalar_robust_copy_to_shared.get_tir()
     assert func is not None
+
+
+def test_scalar_robust_force_async_copy_to_shared_source():
+    code = kernel_with_scalar_robust_force_async_copy_to_shared().get_kernel_source()
+
+    assert "tl::cp_async_gs_robust<4>" in code
+    assert "tl::robust_load" not in code
 
 
 def test_zero_sized_robust_async_copy_numerical():

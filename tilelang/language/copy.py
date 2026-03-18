@@ -63,10 +63,17 @@ def copy(src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
     # the scalar copy across threads.
     if src_extent is None and dst_extent is None and isinstance(src, tir.BufferLoad) and isinstance(
             dst, tir.BufferLoad):
-        store = tir.BufferStore(dst.buffer, src, dst.indices)
-        if src_robust_desc is None:
-            return store
-        return tir.AttrStmt(src.buffer.data, "tl.source_robust_desc", src_robust_desc, store)
+        body = tir.BufferStore(dst.buffer, src, dst.indices)
+        if src_robust_desc is not None:
+            body = tir.AttrStmt(src.buffer.data, "tl.source_robust_desc", src_robust_desc, body)
+        if force_async_copy:
+            body = tir.AttrStmt(
+                tir.IntImm("int32", 0),
+                "tl.force_async_copy",
+                tir.IntImm("int32", 1),
+                body,
+            )
+        return body
 
     assert src_extent or dst_extent, "Can't deduce copy extents from args"
     src_extent = list(src_extent) if src_extent else [1] * len(dst_extent)
