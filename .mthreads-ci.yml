@@ -47,6 +47,7 @@ build-PH1:
     - "cd ${WORKSPACE}/${REPO_NAME}"
     - "export USE_MUSA=1"
     - "export PATH=/opt/_internal/cpython-3.10.19/bin:$PATH"
+    - "export PATH=$(python3.10 -c 'import sys; print(sys.prefix)')/bin:$PATH"
     - "python3 -m build --wheel -C cmake.define.USE_ALTERNATIVE_LINKER=OFF"
     - "cd dist && pip install *.whl"
   artifacts:

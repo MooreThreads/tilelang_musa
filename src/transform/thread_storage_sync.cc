@@ -751,11 +751,11 @@ private:
     // On MUSA/CUDA, __musa_async_arrive is warp-level: each warp with at least
     // one active thread contributes exactly 1 arrive, regardless of how many
     // threads within that warp are active (predicated execution still counts).
-    // The number of active warps is determined by the *maximum* linear thread
-    // index: linear_idx = tz * Dy * Dx + ty * Dx + tx.
-    // We must NOT simply divide the active thread count by warp_size, because
-    // active threads may span more warps than that implies (e.g. threadIdx.x in
-    // [0,15] with threadIdx.y in [0,3] gives 64 active threads but 4 warps).
+    // The number of active warps is the warp-index range [min_warp, max_warp],
+    // computed from the linear thread index: linear_idx = tz*Dy*Dx + ty*Dx + tx.
+    // We must use both min and max linear indices because the sync group may
+    // start at a non-zero thread (e.g. producer threads [128,255] in a 256-thread
+    // block span warps 4-7 = 4 warps, not 8).
     int64_t block_dim_x = 1, block_dim_y = 1;
     if (tx_->dom.defined()) {
       if (const auto *n = tx_->dom->extent.as<IntImmNode>())
@@ -765,11 +765,14 @@ private:
       if (const auto *n = ty_->dom->extent.as<IntImmNode>())
         block_dim_y = n->value;
     }
+    int64_t min_linear_idx = key.tz_min * block_dim_y * block_dim_x +
+                             key.ty_min * block_dim_x + key.tx_min;
     int64_t max_linear_idx = key.tz_max * block_dim_y * block_dim_x +
                              key.ty_max * block_dim_x + key.tx_max;
     static constexpr int64_t kWarpSize = 32;
     size_t thread_count =
-        static_cast<size_t>((max_linear_idx / kWarpSize + 1) * kWarpSize);
+        static_cast<size_t>((max_linear_idx / kWarpSize -
+                             min_linear_idx / kWarpSize + 1) * kWarpSize);
 
     barrier_id_map_[key] = barrier_id;
     thread_count_map_[key] = thread_count;
