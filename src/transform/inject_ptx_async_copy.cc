@@ -41,6 +41,9 @@ using namespace tir;
 
 class PTXAsyncCopyInjector : public StmtMutator {
 public:
+  explicit PTXAsyncCopyInjector(bool disable_force_async_wait = false)
+      : disable_force_async_wait_(disable_force_async_wait) {}
+
   using StmtMutator::VisitStmt_;
 
   Stmt VisitStmt_(const AttrStmtNode *attr) {
@@ -76,7 +79,7 @@ public:
             }
           }
         });
-        if (has_cp_async) {
+        if (has_cp_async && !disable_force_async_wait_) {
           auto wait_cnt = IntImm(DataType::Int(32), 0);
           auto wait_stmt = Evaluate(
               Call(DataType::Void(), builtin::ptx_wait_group(), {wait_cnt}));
@@ -158,7 +161,8 @@ public:
       return stmt;
     }
     Stmt result = cp_async.value();
-    if (body_info.has_local_force_async && !in_force_async_copy_) {
+    if (body_info.has_local_force_async && !in_force_async_copy_ &&
+        !disable_force_async_wait_) {
       result = SeqStmt(Array<Stmt>{result, MakeWaitGroupStmt()});
     }
     return result;
@@ -438,6 +442,7 @@ private:
   arith::Analyzer analyzer_;
   bool in_async{false};
   bool in_force_async_copy_{false};
+  bool disable_force_async_wait_{false};
   PrimExpr current_src_robust_desc_;
 };
 
@@ -446,7 +451,9 @@ using namespace tir::transform;
 tvm::transform::Pass InjectPTXAsyncCopy() {
   auto pass_func = [=](PrimFunc f, const IRModule &m, const PassContext &ctx) {
     auto *n = f.CopyOnWrite();
-    n->body = PTXAsyncCopyInjector()(n->body);
+    bool disable_thread_storage_sync =
+        ctx->GetConfig<Bool>(kDisableThreadStorageSync, Bool(false)).value();
+    n->body = PTXAsyncCopyInjector(disable_thread_storage_sync)(n->body);
     return f;
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.InjectPTXAsyncCopy", {});
