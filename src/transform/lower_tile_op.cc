@@ -428,7 +428,7 @@ private:
         auto node = access_ptr_call.CopyOnWrite();
         node->args.Set(0, load_expr);
         access_ptr_call = Call(access_ptr_call->dtype, access_ptr_call->op,
-                               {load_expr}, access_ptr_call->span);
+                               {load_expr}, {}, access_ptr_call->span);
       }
       BufferLoad load = Downcast<BufferLoad>(access_ptr_call->args[0]);
       Array<PrimExpr> indices = load->indices;
@@ -498,7 +498,7 @@ private:
       }
       result.rewritten = true;
       result.expr = Call(access_ptr_call->dtype, access_ptr_call->op, new_args,
-                         access_ptr_call->span);
+                         {}, access_ptr_call->span);
       return result;
     } else {
       LOG(FATAL) << "Invalid access op for permuted layout: " << access_ptr;
@@ -595,7 +595,7 @@ private:
       if (!load_expr.same_as(address_of_call->args[0])) {
         auto call_node = call.CopyOnWrite();
         call_node->args.Set(5, Call(address_of_call->dtype, address_of_call->op,
-                                    {load_expr}, address_of_call->span));
+                                    {load_expr}, {}, address_of_call->span));
         address_of_call = Downcast<Call>(call->args[5]);
         access_ptr = call->args[5];
       }

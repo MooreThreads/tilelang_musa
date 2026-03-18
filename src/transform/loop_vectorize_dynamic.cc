@@ -424,7 +424,8 @@ private:
         body = vectorize_for;
       }
       body = For(outer_var, 0, extent / vector_size_, fnode->kind, body,
-                 fnode->thread_binding, fnode->annotations, fnode->span);
+                 fnode->thread_binding, fnode->annotations, fnode->step,
+                 fnode->span);
       return body;
     } else {
       // If dynamic_tail_split is false, we will directly vectorize the loop
@@ -434,9 +435,9 @@ private:
 
       For vectorize_for =
           For(inner_var, 0, vector_size_, ForKind::kVectorized, vectorize_body);
-      body =
-          For(outer_var, 0, extent / vector_size_, fnode->kind, vectorize_for,
-              fnode->thread_binding, fnode->annotations, fnode->span);
+      body = For(outer_var, 0, extent / vector_size_, fnode->kind, vectorize_for,
+                 fnode->thread_binding, fnode->annotations, fnode->step,
+                 fnode->span);
       return body;
     }
   }

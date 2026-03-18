@@ -229,7 +229,8 @@ private:
           outer_kind = ForKind::kUnrolled;
         }
         body = For(outer_var, 0, extent / vector_size_, outer_kind, body,
-                   fnode->thread_binding, fnode->annotations, fnode->span);
+                   fnode->thread_binding, fnode->annotations, fnode->step,
+                   fnode->span);
         return body;
       }
     } else {
