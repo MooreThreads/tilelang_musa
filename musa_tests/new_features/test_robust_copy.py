@@ -161,6 +161,24 @@ def kernel_with_vectorized_scalar_robust_force_async_copy_to_shared():
     return main
 
 
+@tilelang.jit(target="musa", out_idx=[1], pass_configs=PASS_CONFIGS_DISABLE_THREAD_STORAGE_SYNC)
+def kernel_with_vectorized_scalar_robust_force_async_copy_to_shared_disable_thread_storage_sync():
+
+    @T.prim_func
+    def main(
+            src: T.Tensor([4], T.float32),
+            out: T.Tensor([4], T.float32),
+    ):
+        with T.Kernel(1, threads=1) as _:
+            src_shared = T.alloc_shared([4], T.float32)
+            robust_desc = T.make_robust_desc(T.address_of(src[1]), 8)
+            for v in T.vectorized(4):
+                T.copy(src[v], src_shared[v], force_async_copy=True, src_robust_desc=robust_desc)
+            T.copy(src_shared, out)
+
+    return main
+
+
 @pytest.mark.parametrize(
     "kernel_builder",
     [
