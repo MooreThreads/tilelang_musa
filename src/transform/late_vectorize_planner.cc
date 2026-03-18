@@ -32,6 +32,21 @@ private:
   explicit LateVectorizePlanner(arith::Analyzer *analyzer)
       : IRMutatorWithAnalyzer(analyzer) {}
 
+  static bool ContainsVectorizedLoop(const Stmt &body) {
+    bool found = false;
+    PostOrderVisit(body, [&](const ObjectRef &obj) {
+      if (found) {
+        return;
+      }
+      if (const auto *loop = obj.as<ForNode>()) {
+        if (loop->kind == ForKind::kVectorized) {
+          found = true;
+        }
+      }
+    });
+    return found;
+  }
+
   static bool IsMusaFP8Type(DataType t) {
     return t.is_float8_e4m3() || t.is_float8_e5m2();
   }
@@ -102,7 +117,7 @@ private:
 
   Stmt VisitStmt_(const ForNode *op) final {
     For for_node = Downcast<For>(IRMutatorWithAnalyzer::VisitStmt_(op));
-    if (for_node->kind == ForKind::kVectorized) {
+    if (ContainsVectorizedLoop(for_node)) {
       return for_node;
     }
     if (!ContainsMusaSIMDOpportunity(for_node->body)) {
