@@ -91,7 +91,7 @@ public:
   Stmt VisitStmt_(const ForNode *op) final {
     auto stmt = StmtMutator::VisitStmt_(op);
     const auto *loop = stmt.as<ForNode>();
-    if (!loop || !in_async || !in_force_async_copy_ || !is_zero(loop->min)) {
+    if (!loop || !is_zero(loop->min)) {
       return stmt;
     }
 
@@ -100,16 +100,24 @@ public:
       return stmt;
     }
 
-    const auto *store = loop->body.as<BufferStoreNode>();
-    if (store == nullptr) {
+    LoopBodyInfo body_info;
+    if (!MatchLoopBodyInfo(loop->body, &body_info)) {
       return stmt;
     }
+    bool force_async_copy =
+        in_force_async_copy_ || body_info.has_local_force_async;
+    if (!force_async_copy) {
+      return stmt;
+    }
+    const auto *store = body_info.store;
     if (!(store->buffer.scope() == "shared" ||
           store->buffer.scope() == "shared.dyn")) {
       return stmt;
     }
-    const auto *load = store->value.as<BufferLoadNode>();
-    if (load == nullptr || load->buffer.scope() != "global") {
+    const auto *load = body_info.load;
+    bool predicated = body_info.predicated;
+    PrimExpr predicate_value = body_info.predicate_value;
+    if (load->buffer.scope() != "global") {
       return stmt;
     }
     if (store->indices.size() != 1 || load->indices.size() != 1) {
@@ -144,11 +152,16 @@ public:
     }
 
     auto cp_async = MakeCPAsync(load, store, dst_base.value(), src_base.value(),
-                                bytes, false, PrimExpr(), index_factor);
+                                bytes, predicated, predicate_value,
+                                index_factor, body_info.local_src_robust_desc);
     if (!cp_async.defined()) {
       return stmt;
     }
-    return cp_async.value();
+    Stmt result = cp_async.value();
+    if (body_info.has_local_force_async && !in_force_async_copy_) {
+      result = SeqStmt(Array<Stmt>{result, MakeWaitGroupStmt()});
+    }
+    return result;
   }
 
   Stmt InjectPTX(const BufferLoadNode *load, const BufferStoreNode *store,
@@ -230,10 +243,11 @@ public:
             return PrimExpr();
           }();
           if (src_offset.defined() && dst_offset.defined()) {
-            return Evaluate(Call(
-                store->buffer->dtype, tvm::tir::builtin::ptx_cp_async(),
-                {store->buffer->data, mul(dst_offset, PrimExpr(index_factor)),
-                 load->buffer->data, src_offset, PrimExpr(bytes)}));
+            auto call = MakeCPAsync(load, store, dst_offset, src_offset, bytes,
+                                    false, PrimExpr(), index_factor);
+            if (call.defined()) {
+              return call.value();
+            }
           }
         } else {
           // Only some vectorized indexing patterns are supported for now.
@@ -263,11 +277,11 @@ public:
           }();
 
           if (src_offset.defined() && dst_offset.defined()) {
-            return Evaluate(Call(
-                store->buffer->dtype, tvm::tir::builtin::ptx_cp_async(),
-                {store->buffer->data, mul(dst_offset, PrimExpr(index_factor)),
-                 load->buffer->data, src_offset, PrimExpr(bytes),
-                 predicate_value}));
+            auto call = MakeCPAsync(load, store, dst_offset, src_offset, bytes,
+                                    true, predicate_value, index_factor);
+            if (call.defined()) {
+              return call.value();
+            }
           }
         }
       }
@@ -281,53 +295,113 @@ public:
     if (in_async && is_shared) {
       if (auto *load = store->value.as<BufferLoadNode>()) {
         return InjectPTX(load, store);
-      } else if (auto *call = store->value.as<CallNode>()) {
-        // tir.if_then_else is a call to tir::builtin::if_then_else()
-        if (call->op.same_as(builtin::if_then_else()) &&
-            call->args.size() == 3) {
-          if (auto *load = call->args[1].as<BufferLoadNode>()) {
-            // Only default value of 0 is supported since 0 is the default value
-            // used by cp.async ptx. @see section 9.7.8.22.3. of
-            // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#asynchronous-memory-operations
-            bool else_value_is_zero = false;
-            if (auto *b = call->args[2].as<BroadcastNode>()) {
-              if (auto *f = b->value.as<FloatImmNode>()) {
-                else_value_is_zero = f->value == 0.0f;
-              } else if (auto *i = b->value.as<IntImmNode>()) {
-                else_value_is_zero = i->value == 0;
-              }
-            }
-            if (auto *f = call->args[2].as<FloatImmNode>()) {
-              else_value_is_zero = f->value == 0.0f;
-            } else if (auto *i = call->args[2].as<IntImmNode>()) {
-              else_value_is_zero = i->value == 0;
-            }
-            if (else_value_is_zero) {
-              return InjectPTX(load, store, true, call->args[0]);
-            }
-          }
-        }
+      }
+      const BufferLoadNode *load = nullptr;
+      PrimExpr predicate_value;
+      if (MatchPredicatedLoad(store->value, &load, &predicate_value)) {
+        return InjectPTX(load, store, true, predicate_value);
       }
     }
     return StmtMutator::VisitStmt_(store);
   }
 
 private:
-  Optional<Stmt> MakeCPAsync(const BufferLoadNode *load,
-                             const BufferStoreNode *store,
-                             const PrimExpr &dst_offset,
-                             const PrimExpr &src_offset, int bytes,
-                             bool predicated = false,
-                             const PrimExpr &predicate_value = PrimExpr(),
-                             int index_factor = 1) {
+  struct LoopBodyInfo {
+    const BufferStoreNode *store{nullptr};
+    const BufferLoadNode *load{nullptr};
+    bool predicated{false};
+    PrimExpr predicate_value;
+    bool has_local_force_async{false};
+    PrimExpr local_src_robust_desc;
+  };
+
+  Stmt MakeWaitGroupStmt() const {
+    auto wait_cnt = IntImm(DataType::Int(32), 0);
+    return Evaluate(
+        Call(DataType::Void(), builtin::ptx_wait_group(), {wait_cnt}));
+  }
+
+  bool ElseValueIsZero(const PrimExpr &value) const {
+    if (auto *b = value.as<BroadcastNode>()) {
+      if (auto *f = b->value.as<FloatImmNode>()) {
+        return f->value == 0.0f;
+      }
+      if (auto *i = b->value.as<IntImmNode>()) {
+        return i->value == 0;
+      }
+      return false;
+    }
+    if (auto *f = value.as<FloatImmNode>()) {
+      return f->value == 0.0f;
+    }
+    if (auto *i = value.as<IntImmNode>()) {
+      return i->value == 0;
+    }
+    return false;
+  }
+
+  bool MatchPredicatedLoad(const PrimExpr &value, const BufferLoadNode **load,
+                           PrimExpr *predicate_value) const {
+    const auto *call = value.as<CallNode>();
+    if (!(call && call->op.same_as(builtin::if_then_else()) &&
+          call->args.size() == 3)) {
+      return false;
+    }
+    const auto *matched_load = call->args[1].as<BufferLoadNode>();
+    if (matched_load == nullptr || !ElseValueIsZero(call->args[2])) {
+      return false;
+    }
+    *load = matched_load;
+    *predicate_value = call->args[0];
+    return true;
+  }
+
+  bool MatchLoopBodyInfo(const Stmt &body, LoopBodyInfo *info) const {
+    Stmt inner = body;
+    while (const auto *attr = inner.as<AttrStmtNode>()) {
+      if (attr->attr_key == tl::attr::kForceAsyncCopy) {
+        info->has_local_force_async = true;
+      } else if (attr->attr_key == tl::attr::kSourceRobustDesc) {
+        info->local_src_robust_desc = attr->value;
+      } else {
+        return false;
+      }
+      inner = attr->body;
+    }
+
+    const auto *store = inner.as<BufferStoreNode>();
+    if (store == nullptr) {
+      return false;
+    }
+    info->store = store;
+    info->load = store->value.as<BufferLoadNode>();
+    if (info->load != nullptr) {
+      return true;
+    }
+    if (!MatchPredicatedLoad(store->value, &info->load,
+                             &info->predicate_value)) {
+      return false;
+    }
+    info->predicated = true;
+    return true;
+  }
+
+  Optional<Stmt>
+  MakeCPAsync(const BufferLoadNode *load, const BufferStoreNode *store,
+              const PrimExpr &dst_offset, const PrimExpr &src_offset, int bytes,
+              bool predicated = false,
+              const PrimExpr &predicate_value = PrimExpr(),
+              int index_factor = 1, const PrimExpr &robust_desc = PrimExpr()) {
     Array<PrimExpr> args = {store->buffer->data,
                             mul(dst_offset, PrimExpr(index_factor)),
                             load->buffer->data, src_offset, PrimExpr(bytes)};
     Op op = tvm::tir::builtin::ptx_cp_async();
-    if (current_src_robust_desc_.defined()) {
+    PrimExpr effective_robust_desc =
+        robust_desc.defined() ? robust_desc : current_src_robust_desc_;
+    if (effective_robust_desc.defined()) {
       op = tl::musa_cp_async_robust();
       auto [robust_base, robust_size] =
-          GetRobustDescArgs(current_src_robust_desc_);
+          GetRobustDescArgs(effective_robust_desc);
       args.push_back(robust_base);
       args.push_back(robust_size);
     }
