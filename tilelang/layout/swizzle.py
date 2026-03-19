@@ -100,6 +100,46 @@ def make_sqmma_swizzled_layout(buffer: tvm.tir.Buffer,
     raise ValueError(f"Unsupported buffer type for make_sqmma_swizzled_layout: {type(buffer)}")
 
 
+# no-swizzle layout with 1:1 index mapping and no dimension change.
+def make_no_swizzled_layout(buffer: tvm.tir.Buffer):
+    if isinstance(buffer, tvm.tir.Buffer):
+        target_shape = list(buffer.shape)
+
+        def forward_fn(*indices):
+            return list(indices)
+
+        return Layout(target_shape, forward_fn)
+
+    if isinstance(buffer, tvm.tir.BufferRegion):
+        region_shape = [r.extent for r in buffer.region]
+        if len(region_shape) < 2:
+            raise ValueError("make_no_swizzled_layout requires at least 2D region, "
+                             f"got shape={region_shape}")
+        if len(region_shape) > 2 and any(int(dim) != 1 for dim in region_shape[:-2]):
+            raise ValueError("make_no_swizzled_layout only supports BufferRegion with leading "
+                             f"singleton dimensions, got shape={region_shape}")
+
+        target_shape = list(buffer.buffer.shape)
+        if len(target_shape) < 2:
+            raise ValueError("make_no_swizzled_layout requires underlying buffer to be at least "
+                             f"2D, got shape={target_shape}")
+
+        m_dim, n_dim = region_shape[-2], region_shape[-1]
+        base_layout = Layout([m_dim, n_dim], lambda i, j: [i, j])
+        if len(target_shape) == 2:
+            return base_layout
+
+        prefix_rank = len(target_shape) - 2
+
+        def forward_fn(*indices):
+            mapped = list(base_layout.map_forward_index([indices[-2], indices[-1]]))
+            return list(indices[:prefix_rank]) + mapped
+
+        return Layout(target_shape, forward_fn)
+
+    raise ValueError(f"Unsupported buffer type for make_no_swizzled_layout: {type(buffer)}")
+
+
 # for TCGEN05MMA Intrinsics
 def make_tcgen05mma_swizzled_layout(buffer: tvm.tir.Buffer,
                                     continuity: int = None,
