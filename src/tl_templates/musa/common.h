@@ -21,6 +21,15 @@ using mutlass::half_t;
 using mutlass::tfloat32_t;
 using int4_t = int4;
 
+using tl_h_elem_t = decltype(__half_raw{}.data);
+using tl_bf_elem_t = decltype(__mt_bfloat16_raw{}.data);
+using tl_h2 = tl_h_elem_t __attribute__((ext_vector_type(2)));
+using tl_h4 = tl_h_elem_t __attribute__((ext_vector_type(4)));
+using tl_h8 = tl_h_elem_t __attribute__((ext_vector_type(8)));
+using tl_bf2 = tl_bf_elem_t __attribute__((ext_vector_type(2)));
+using tl_bf4 = tl_bf_elem_t __attribute__((ext_vector_type(4)));
+using tl_bf8 = tl_bf_elem_t __attribute__((ext_vector_type(8)));
+
 using v2i32_t = int32_t __attribute__((vector_size(8)));
 using v3i32_t = int32_t __attribute__((vector_size(12)));
 using v4i32_t = int32_t __attribute__((vector_size(16)));

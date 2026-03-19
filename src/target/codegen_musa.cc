@@ -34,6 +34,40 @@ std::pair<PrimExpr, PrimExpr> GetRobustDescArgs(const PrimExpr &desc) {
   return {call->args[0], call->args[1]};
 }
 
+bool UseMusaNative16BitVector(DataType t) {
+  return (t.is_float16() || t.is_bfloat16()) &&
+         (t.lanes() == 2 || t.lanes() == 4 || t.lanes() == 8);
+}
+
+std::string GetMusaNative16BitVectorType(DataType t) {
+  ICHECK(UseMusaNative16BitVector(t));
+  if (t.is_float16()) {
+    return "tl_h" + std::to_string(t.lanes());
+  }
+  return "tl_bf" + std::to_string(t.lanes());
+}
+
+std::string CastToMusaNative16BitVectorElem(DataType t,
+                                            const std::string &value) {
+  ICHECK(UseMusaNative16BitVector(t));
+  if (t.is_float16()) {
+    return "static_cast<tl_h_elem_t>(static_cast<float>(" + value + "))";
+  }
+  return "static_cast<tl_bf_elem_t>(static_cast<__mt_bfloat16_raw>("
+         "__float2bfloat16_rn(static_cast<float>(" +
+         value + "))).data)";
+}
+
+std::string CastFromMusaNative16BitVectorElem(DataType t,
+                                              const std::string &value) {
+  ICHECK(UseMusaNative16BitVector(t));
+  if (t.is_float16()) {
+    return "half_t(static_cast<float>(" + value + "))";
+  }
+  return "bfloat16_t(static_cast<float>(__mt_bfloat16(__mt_bfloat16_raw{" +
+         value + "})))";
+}
+
 } // namespace
 
 struct MUSAMath {
@@ -431,6 +465,8 @@ void CodeGenTileLangMUSA::PrintType(DataType t, std::ostream &os) { // NOLINT(*)
       enable_fp16_ = true;
       if (t.is_scalar()) {
         os << "half_t";
+      } else if (UseMusaNative16BitVector(t)) {
+        os << GetMusaNative16BitVectorType(t);
       } else if (lanes <= 8) {
         // Emit MUSA code to access fp16 vector elements.
         //
@@ -488,6 +524,8 @@ void CodeGenTileLangMUSA::PrintType(DataType t, std::ostream &os) { // NOLINT(*)
     enable_bf16_ = true;
     if (t.is_scalar()) {
       os << "bfloat16_t";
+    } else if (UseMusaNative16BitVector(t)) {
+      os << GetMusaNative16BitVectorType(t);
     } else if (lanes <= 8) {
       ICHECK_EQ(lanes % 2, 0) << "only support even lane for half type";
       os << "uint" << lanes / 2;
@@ -764,6 +802,9 @@ void CodeGenTileLangMUSA::PrintVecElemLoad(const std::string &vec, DataType t,
       std::string ac = vec + "." + access[i / 8];
       os << "((" << type_name << ")(" << ac << " >> " << i % 8 * 8 << "))";
     }
+  } else if (UseMusaNative16BitVector(t)) {
+    os << CastFromMusaNative16BitVectorElem(t, vec + "[" + std::to_string(i) +
+                                                   "]");
   } else if (t.is_float16()) {
     if (t.lanes() <= 8) {
       os << "((half2*)(&(" << vec << "." << access[i / 2] << ")))->"
@@ -845,6 +886,9 @@ void CodeGenTileLangMUSA::PrintVecElemStore(const std::string &vec, DataType t,
       }
       stream << "(" << value << " << " << i % 8 * 8 << ");\n";
     }
+  } else if (UseMusaNative16BitVector(t)) {
+    stream << vec << "[" << i
+           << "] = " << CastToMusaNative16BitVectorElem(t, value) << ";\n";
   } else if (t.is_float16()) {
     if (t.lanes() <= 8) {
       stream << "((half2*)(&(" << vec << "." << access[i / 2] << ")))->"
@@ -2879,6 +2923,21 @@ void CodeGenTileLangMUSA::VisitExpr_(const RampNode *op, std::ostream &os) {
   int lanes = static_cast<int>(Downcast<IntImm>(op->lanes)->value);
   CHECK_LE(lanes, 4) << "Translate Ramp Node " << tvm::ffi::GetRef<Ramp>(op)
                      << " with " << lanes << " lanes is not allowed.";
+  if (UseMusaNative16BitVector(op->dtype)) {
+    os << "(";
+    PrintType(op->dtype, os);
+    os << "{";
+    for (int i = 0; i < lanes; i++) {
+      std::string value = "(" + PrintExpr(op->base) + ")+(" +
+                          PrintExpr(op->stride) + "*" + std::to_string(i) + ")";
+      os << CastToMusaNative16BitVectorElem(op->dtype, value);
+      if (i != lanes - 1) {
+        os << ", ";
+      }
+    }
+    os << "})";
+    return;
+  }
   os << "(make_";
   PrintType(op->dtype, os);
   os << "(";
@@ -3071,6 +3130,21 @@ void CodeGenTileLangMUSA::VisitExpr_(const BroadcastNode *op,
       }
       return;
     }
+  }
+
+  if (UseMusaNative16BitVector(op->dtype)) {
+    std::string v = PrintExpr(op->value);
+    os << "(";
+    PrintType(op->dtype, os);
+    os << "{";
+    for (int i = 0; i < lanes; ++i) {
+      if (i != 0) {
+        os << ", ";
+      }
+      os << CastToMusaNative16BitVectorElem(op->dtype, v);
+    }
+    os << "})";
+    return;
   }
 
   if (op->dtype.is_float16()) {
@@ -3343,6 +3417,21 @@ void CodeGenTileLangMUSA::PrintVecElemLoadExpr(DataType t, int i,
          << "))";
       return;
     }
+  }
+
+  if (UseMusaNative16BitVector(t)) {
+    if (i == 0) {
+      os << "(";
+      PrintType(t, os);
+      os << "{";
+    }
+    os << CastToMusaNative16BitVectorElem(t, value);
+    if (i != t.lanes() - 1) {
+      os << ",";
+    } else {
+      os << "})";
+    }
+    return;
   }
 
   if (t.is_float16()) {
