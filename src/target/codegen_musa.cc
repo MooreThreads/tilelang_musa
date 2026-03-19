@@ -64,8 +64,7 @@ std::string CastFromMusaNative16BitVectorElem(DataType t,
   if (t.is_float16()) {
     return "half_t(static_cast<float>(" + value + "))";
   }
-  return "bfloat16_t(static_cast<float>(__mt_bfloat16(__mt_bfloat16_raw{" +
-         value + "})))";
+  return "bfloat16_t(static_cast<float>(" + value + "))";
 }
 
 } // namespace
