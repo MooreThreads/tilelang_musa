@@ -360,6 +360,7 @@ CodeGenTileLangMUSA::GetTMASwizzleGranularity(const PrimExpr &desc) const {
 std::string CodeGenTileLangMUSA::Finish() {
 
   decl_stream << "#include <tl_templates/musa/common.h>\n";
+  decl_stream << "#include <tl_templates/musa/cvt.h>\n";
   decl_stream << "#include <tl_templates/musa/intrin.h>\n";
 
   // if (need_mma_h_) {
@@ -380,10 +381,6 @@ std::string CodeGenTileLangMUSA::Finish() {
   // if (need_tcgen05_common_h_) {
   //   decl_stream << "#include <tl_templates/musa/tcgen_05.h>\n";
   // }
-  if (enable_fp8_) {
-    decl_stream << "#include <tl_templates/musa/musa_fp8.h>\n";
-  }
-
   if (need_math_constants_h_) {
     decl_stream << "#include <math_constants.h>\n";
   }
@@ -1082,20 +1079,20 @@ void CodeGenTileLangMUSA::VisitExpr_(const CastNode *op, std::ostream &os) {
   // Handle conversion between float16 and float32
   if (from_ty.is_float16() && target_ty.is_float() && target_ty.bits() == 32) {
     if (lanes == 2) {
-      PrintVectorizedCast("__half22float2", "half2", "float2", 2);
+      PrintVectorizedCast("tl::cvt_half_to_float_x2", "half2", "float2", 2);
       return;
     } else if (lanes == 4 || lanes == 8) {
-      PrintVectorizedCast("__half42float4", "__half4", "float4", 4);
+      PrintVectorizedCast("tl::cvt_half_to_float_x4", "__half4", "float4", 4);
       return;
     }
   }
 
   if (from_ty.is_float() && from_ty.bits() == 32 && target_ty.is_float16()) {
     if (lanes == 2) {
-      PrintVectorizedCast("__float22half2_rn", "float2", "half2", 2);
+      PrintVectorizedCast("tl::cvt_float_to_half_x2", "float2", "half2", 2);
       return;
     } else if (lanes == 4 || lanes == 8) {
-      PrintVectorizedCast("__float42half4_rn", "float4", "__half4", 4);
+      PrintVectorizedCast("tl::cvt_float_to_half_x4", "float4", "__half4", 4);
       return;
     }
   }
@@ -1103,24 +1100,24 @@ void CodeGenTileLangMUSA::VisitExpr_(const CastNode *op, std::ostream &os) {
   // Handle conversion between bfloat16 and float32
   if (from_ty.is_bfloat16() && target_ty.is_float() && target_ty.bits() == 32) {
     if (lanes == 2) {
-      PrintVectorizedCast("__bfloat1622float2", "__mt_bfloat162", "float2", 2,
-                          "", true, false);
+      PrintVectorizedCast("tl::cvt_bfloat16_to_float_x2", "__mt_bfloat162",
+                          "float2", 2, "", true, false);
       return;
     } else if (lanes == 4 || lanes == 8) {
-      PrintVectorizedCast("__bfloat1642float4", "__mt_bfloat164", "float4", 4,
-                          "", true, false);
+      PrintVectorizedCast("tl::cvt_bfloat16_to_float_x4", "__mt_bfloat164",
+                          "float4", 4, "", true, false);
       return;
     }
   }
 
   if (from_ty.is_float() && from_ty.bits() == 32 && target_ty.is_bfloat16()) {
     if (lanes == 2) {
-      PrintVectorizedCast("__float22bfloat162_rn", "float2", "__mt_bfloat162",
-                          2, "", false, true);
+      PrintVectorizedCast("tl::cvt_float_to_bfloat16_x2", "float2",
+                          "__mt_bfloat162", 2, "", false, true);
       return;
     } else if (lanes == 4 || lanes == 8) {
-      PrintVectorizedCast("__float42bfloat164_rn", "float4", "__mt_bfloat164",
-                          4, "", false, true);
+      PrintVectorizedCast("tl::cvt_float_to_bfloat16_x4", "float4",
+                          "__mt_bfloat164", 4, "", false, true);
       return;
     }
   }
@@ -1130,14 +1127,14 @@ void CodeGenTileLangMUSA::VisitExpr_(const CastNode *op, std::ostream &os) {
       (IsMusaE4M3Type(target_ty) || IsMusaE5M2Type(target_ty))) {
     if (lanes == 2) {
       PrintVectorizedCast(
-          IsMusaE4M3Type(target_ty) ? "tl::cvt_half2_to_fp8_e4_2"
-                                    : "tl::cvt_half2_to_fp8_e5_2",
+          IsMusaE4M3Type(target_ty) ? "tl::cvt_half_to_fp8e4m3_x2"
+                                    : "tl::cvt_half_to_fp8e5m2_x2",
           "half2", IsMusaE4M3Type(target_ty) ? "fp8_e4_2_t" : "fp8_e5_2_t", 2);
       return;
     } else if (lanes == 4 || lanes == 8) {
       PrintVectorizedCast(
-          IsMusaE4M3Type(target_ty) ? "tl::cvt_half4_to_fp8_e4_4"
-                                    : "tl::cvt_half4_to_fp8_e5_4",
+          IsMusaE4M3Type(target_ty) ? "tl::cvt_half_to_fp8e4m3_x4"
+                                    : "tl::cvt_half_to_fp8e5m2_x4",
           "__half4", IsMusaE4M3Type(target_ty) ? "fp8_e4_4_t" : "fp8_e5_4_t",
           4);
       return;
@@ -1148,16 +1145,16 @@ void CodeGenTileLangMUSA::VisitExpr_(const CastNode *op, std::ostream &os) {
   if ((IsMusaE4M3Type(from_ty) || IsMusaE5M2Type(from_ty)) &&
       target_ty.is_float16()) {
     if (lanes == 2) {
-      PrintVectorizedCast(IsMusaE4M3Type(from_ty) ? "tl::cvt_fp8_e4_2_to_half2"
-                                                  : "tl::cvt_fp8_e5_2_to_half2",
-                          IsMusaE4M3Type(from_ty) ? "fp8_e4_2_t" : "fp8_e5_2_t",
-                          "half2", 2);
+      PrintVectorizedCast(
+          IsMusaE4M3Type(from_ty) ? "tl::cvt_fp8e4m3_to_half_x2"
+                                  : "tl::cvt_fp8e5m2_to_half_x2",
+          IsMusaE4M3Type(from_ty) ? "fp8_e4_2_t" : "fp8_e5_2_t", "half2", 2);
       return;
     } else if (lanes == 4 || lanes == 8) {
-      PrintVectorizedCast(IsMusaE4M3Type(from_ty) ? "tl::cvt_fp8_e4_4_to_half4"
-                                                  : "tl::cvt_fp8_e5_4_to_half4",
-                          IsMusaE4M3Type(from_ty) ? "fp8_e4_4_t" : "fp8_e5_4_t",
-                          "__half4", 4);
+      PrintVectorizedCast(
+          IsMusaE4M3Type(from_ty) ? "tl::cvt_fp8e4m3_to_half_x4"
+                                  : "tl::cvt_fp8e5m2_to_half_x4",
+          IsMusaE4M3Type(from_ty) ? "fp8_e4_4_t" : "fp8_e5_4_t", "__half4", 4);
       return;
     }
   }
@@ -1167,14 +1164,14 @@ void CodeGenTileLangMUSA::VisitExpr_(const CastNode *op, std::ostream &os) {
       target_ty.is_float() && target_ty.bits() == 32) {
     if (lanes == 2) {
       PrintVectorizedCast(
-          IsMusaE4M3Type(from_ty) ? "tl::cvt_fp8_e4_2_to_float2"
-                                  : "tl::cvt_fp8_e5_2_to_float2",
+          IsMusaE4M3Type(from_ty) ? "tl::cvt_fp8e4m3_to_float_x2"
+                                  : "tl::cvt_fp8e5m2_to_float_x2",
           IsMusaE4M3Type(from_ty) ? "fp8_e4_2_t" : "fp8_e5_2_t", "float2", 2);
       return;
     } else if (lanes == 4 || lanes == 8) {
       PrintVectorizedCast(
-          IsMusaE4M3Type(from_ty) ? "tl::cvt_fp8_e4_4_to_float4"
-                                  : "tl::cvt_fp8_e5_4_to_float4",
+          IsMusaE4M3Type(from_ty) ? "tl::cvt_fp8e4m3_to_float_x4"
+                                  : "tl::cvt_fp8e5m2_to_float_x4",
           IsMusaE4M3Type(from_ty) ? "fp8_e4_4_t" : "fp8_e5_4_t", "float4", 4);
       return;
     }
@@ -1183,16 +1180,17 @@ void CodeGenTileLangMUSA::VisitExpr_(const CastNode *op, std::ostream &os) {
   // Handle conversion from float32 to float8 (E4M3/E5M2)
   if (from_ty.is_float() && from_ty.bits() == 32 &&
       (IsMusaE4M3Type(target_ty) || IsMusaE5M2Type(target_ty))) {
-    std::string extra_args =
-        std::string(", __MT_SATFINITE, ") +
-        (IsMusaE4M3Type(target_ty) ? "__MT_E4M3" : "__MT_E5M2");
     if (lanes == 2) {
-      PrintVectorizedCast("__musa_cvt_float2_to_fp8x2", "float2",
-                          "__mt_fp8x2_storage_t", 2, extra_args, false, true);
+      PrintVectorizedCast(
+          IsMusaE4M3Type(target_ty) ? "tl::cvt_float_to_fp8e4m3_x2"
+                                    : "tl::cvt_float_to_fp8e5m2_x2",
+          "float2", IsMusaE4M3Type(target_ty) ? "fp8_e4_2_t" : "fp8_e5_2_t", 2);
       return;
     } else if (lanes == 4 || lanes == 8) {
-      PrintVectorizedCast("__musa_cvt_float4_to_fp8x4", "float4",
-                          "__mt_fp8x4_storage_t", 4, extra_args, false, true);
+      PrintVectorizedCast(
+          IsMusaE4M3Type(target_ty) ? "tl::cvt_float_to_fp8e4m3_x4"
+                                    : "tl::cvt_float_to_fp8e5m2_x4",
+          "float4", IsMusaE4M3Type(target_ty) ? "fp8_e4_4_t" : "fp8_e5_4_t", 4);
       return;
     }
   }
