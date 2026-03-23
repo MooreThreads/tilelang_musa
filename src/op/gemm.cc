@@ -997,7 +997,9 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
       int dim_A = A->shape.size();
       const int64_t mat_stride = *as_const_int(A->shape[dim_A - 2]);
       const int64_t mat_continuous = *as_const_int(A->shape[dim_A - 1]);
-      results.Set(A, makeGemmLayoutLinear(mat_stride, mat_continuous));
+      results.Set(A,
+                  makeGemmABLayout(mat_stride, mat_continuous, mat_continuous,
+                                   A->dtype.bits(), !trans_A));
     } else if (A.scope() == "local.fragment") {
       auto fragment = makeGemmQY2FragmentA(M, N, K, M / warp_m, N / warp_n,
                                            A->dtype.bits(), trans_A);
@@ -1009,7 +1011,9 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
       int dim_B = B->shape.size();
       const int64_t mat_stride = *as_const_int(B->shape[dim_B - 2]);
       const int64_t mat_continuous = *as_const_int(B->shape[dim_B - 1]);
-      results.Set(B, makeGemmLayoutLinear(mat_stride, mat_continuous));
+      results.Set(B,
+                  makeGemmABLayout(mat_stride, mat_continuous, mat_continuous,
+                                   B->dtype.bits(), trans_B));
     } else if (B.scope() == "local.fragment") {
       auto fragment = makeGemmQY2FragmentB(M, N, K, M / warp_m, N / warp_n,
                                            B->dtype.bits(), trans_B);
