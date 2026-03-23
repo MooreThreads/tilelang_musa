@@ -198,15 +198,3 @@ __forceinline__ __device__ fp8_e5_32_t make_fp8_e5_32_t(
                               y12, y13, y14, y15);
   return result;
 }
-
-TL_DEVICE half2 make_half2_from_halves(half x, half y) {
-  unsigned packed = __pack_half2(x, y);
-  return *reinterpret_cast<half2 *>(&packed);
-}
-
-TL_DEVICE __half4 make_half4_from_halves(half x0, half x1, half x2, half x3) {
-  __half4 result;
-  reinterpret_cast<half2 *>(&result)[0] = make_half2_from_halves(x0, x1);
-  reinterpret_cast<half2 *>(&result)[1] = make_half2_from_halves(x2, x3);
-  return result;
-}
