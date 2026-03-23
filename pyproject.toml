@@ -30,7 +30,6 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-    "apache-tvm-ffi==0.1.0",
     "cloudpickle",
     "ml-dtypes",
     "numpy<2",

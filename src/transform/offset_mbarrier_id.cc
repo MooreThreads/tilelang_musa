@@ -31,7 +31,7 @@ private:
       } else {
         new_id = Add(id, make_const(DataType::Int(32), 1));
       }
-      return Call(op->dtype, op->op, {new_id}, op->span);
+      return Call(op->dtype, op->op, {new_id}, {}, op->span);
     }
     return StmtExprMutator::VisitExpr_(op);
   }

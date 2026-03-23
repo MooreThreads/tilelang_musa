@@ -65,7 +65,7 @@ protected:
       for (const auto &arg : op->args) {
         new_args.push_back(VisitExpr(arg));
       }
-      return Call(DataType::Int(_index_bitwidth_), op->op, new_args, op->span);
+      return Call(DataType::Int(_index_bitwidth_), op->op, new_args, {}, op->span);
     }
     return Parent::VisitExpr_(op);
   }
