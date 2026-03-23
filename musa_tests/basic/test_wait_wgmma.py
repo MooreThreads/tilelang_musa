@@ -2,6 +2,7 @@ import tilelang
 import tilelang.language as T
 import torch
 from tilelang import tvm as tvm
+import tilelang.testing
 
 TARGET = "musa"
 DEVICE = "musa"
@@ -36,6 +37,7 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
     return matmul_kernel
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_wait_wgmma():
     M, N, K = 512, 512, 512
     bm, bn, bk = 128, 128, 64
@@ -114,6 +116,7 @@ def independent_compute_reference(a, b, block_K):
     return ref_d
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_wait_wgmma_with_independent_compute():
     M, N, K = 512, 512, 512
     bm, bn, bk = 128, 128, 64
