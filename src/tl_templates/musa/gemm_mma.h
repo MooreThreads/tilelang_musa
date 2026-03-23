@@ -46,13 +46,136 @@ template <int N, int num_warp_n, bool transpose> struct SelectCopy {
   using type = DefaultCopy;
 };
 
-template <int Bits, int N, int K, bool K_inner, int num_warp_n, int leading_dim>
+template <int Bits, int N, int K, bool K_inner, int num_warp_n, int leading_dim,
+          typename Enable = void>
 struct OperandTraits {
+  // Primary template, use padded layout and default copy
+  static constexpr int stride = leading_dim;
+  static constexpr int padded =
+      stride % (256 / Bits) == 0 ? stride + 128 / Bits : stride;
   using Layout = typename std::conditional<
-      K_inner,
-      Layout<Shape<Int<N>, Int<leading_dim>>, Stride<Int<leading_dim>, _1>>,
-      Layout<Shape<Int<leading_dim>, Int<K>>,
-             Stride<_1, Int<leading_dim>>>>::type;
+      K_inner, Layout<Shape<Int<N>, Int<leading_dim>>, Shape<Int<padded>, _1>>,
+      Layout<Shape<Int<leading_dim>, Int<K>>, Shape<_1, Int<padded>>>>::type;
+  using Copy = DefaultCopy;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<16, N, K, true, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 64 == 32>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<2, 3, 3>{}, Layout<Shape<_8, _32>, Stride<_32, _1>>{}));
+  using Layout =
+      decltype(tile_to_shape(LayoutAtom{}, Shape<Int<N>, Int<leading_dim>>{}));
+  using Copy = typename SelectCopy<N, num_warp_n, true>::type;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<16, N, K, true, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 64 == 0>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<3, 3, 3>{}, Layout<Shape<_8, _64>, Stride<_64, _1>>{}));
+  using Layout =
+      decltype(tile_to_shape(LayoutAtom{}, Shape<Int<N>, Int<leading_dim>>{}));
+  using Copy = typename SelectCopy<N, num_warp_n, true>::type;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<16, N, K, false, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 64 == 32>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<2, 3, 3>{}, Layout<Shape<_32, _8>, Stride<_1, _32>>{}));
+  using Layout = decltype(tile_to_shape(
+      LayoutAtom{}, Shape<Int<leading_dim>, Int<K>>{}, Step<_2, _1>{}));
+  using Copy = typename SelectCopy<N, num_warp_n, false>::type;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<16, N, K, false, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 64 == 0>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<3, 3, 3>{}, Layout<Shape<_64, _8>, Stride<_1, _64>>{}));
+  using Layout = decltype(tile_to_shape(
+      LayoutAtom{}, Shape<Int<leading_dim>, Int<K>>{}, Step<_2, _1>{}));
+  using Copy = typename SelectCopy<N, num_warp_n, false>::type;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<32, N, K, true, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 32 == 0>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<3, 2, 3>{}, Layout<Shape<_8, _32>, Stride<_32, _1>>{}));
+  using Layout =
+      decltype(tile_to_shape(LayoutAtom{}, Shape<Int<N>, Int<leading_dim>>{}));
+  using Copy = typename SelectCopy<N, num_warp_n, true>::type;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<32, N, K, true, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 32 == 16>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<2, 2, 3>{}, Layout<Shape<_8, _16>, Stride<_16, _1>>{}));
+  using Layout =
+      decltype(tile_to_shape(LayoutAtom{}, Shape<Int<N>, Int<leading_dim>>{}));
+  using Copy = typename SelectCopy<N, num_warp_n, true>::type;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<32, N, K, false, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 32 == 0>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<3, 2, 3>{}, Layout<Shape<_32, _8>, Stride<_1, _32>>{}));
+  using Layout = decltype(tile_to_shape(
+      LayoutAtom{}, Shape<Int<leading_dim>, Int<K>>{}, Step<_2, _1>{}));
+  using Copy = UniversalCopy<tfloat32_t>;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<32, N, K, false, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 32 == 16>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<2, 2, 3>{}, Layout<Shape<_16, _8>, Stride<_1, _16>>{}));
+  using Layout = decltype(tile_to_shape(
+      LayoutAtom{}, Shape<Int<leading_dim>, Int<K>>{}, Step<_2, _1>{}));
+  using Copy = UniversalCopy<tfloat32_t>;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<8, N, K, true, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 128 == 64>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<2, 4, 3>{}, Layout<Shape<_8, _64>, Stride<_64, _1>>{}));
+  using Layout =
+      decltype(tile_to_shape(LayoutAtom{}, Shape<Int<N>, Int<leading_dim>>{}));
+  using Copy = typename SelectCopy<N, num_warp_n, true>::type;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<8, N, K, true, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 128 == 0>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<3, 4, 3>{}, Layout<Shape<_8, _128>, Stride<_128, _1>>{}));
+  using Layout =
+      decltype(tile_to_shape(LayoutAtom{}, Shape<Int<N>, Int<leading_dim>>{}));
+  using Copy = typename SelectCopy<N, num_warp_n, true>::type;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<64, N, K, true, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 16 == 0>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<2, 0, 4>{}, Layout<Shape<_4, _16>, Stride<_16, _1>>{}));
+  using Layout =
+      decltype(tile_to_shape(LayoutAtom{}, Shape<Int<N>, Int<leading_dim>>{}));
+  using Copy = DefaultCopy;
+};
+
+template <int N, int K, int num_warp_n, int leading_dim>
+struct OperandTraits<64, N, K, false, num_warp_n, leading_dim,
+                     typename std::enable_if<leading_dim % 16 == 0>::type> {
+  using LayoutAtom = decltype(composition(
+      Swizzle<2, 2, 2>{}, Layout<Shape<_16, _4>, Stride<_1, _16>>{}));
+  using Layout = decltype(tile_to_shape(
+      LayoutAtom{}, Shape<Int<leading_dim>, Int<K>>{}, Step<_2, _1>{}));
   using Copy = DefaultCopy;
 };
 
