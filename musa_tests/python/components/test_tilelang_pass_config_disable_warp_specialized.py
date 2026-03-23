@@ -108,6 +108,7 @@ def run_gemm(
     profiler.assert_allclose(ref_program, atol=1e-2, rtol=1e-2)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_gemm_f16f16f16_nn():
     run_gemm(
         512,

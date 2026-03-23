@@ -3,8 +3,10 @@ import re
 import torch
 import tilelang
 import tilelang.language as T
+import tilelang.testing
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize("N, BLOCK_N", [
     (8192, 128),
     (4096, 128),

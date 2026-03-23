@@ -53,6 +53,7 @@ def run_elementwise_add(M, N):
         assert "tma_load" in code and re.search(tma_load_pattern_2d, code)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_elementwise_add():
     run_elementwise_add(128, 128)
     run_elementwise_add(256, 128)
