@@ -1,5 +1,6 @@
 import pytest
 import tilelang
+import tilelang.testing
 import torch
 from tilelang import language as T
 
@@ -84,6 +85,7 @@ def ref_two_gemm(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Ten
     return o.to(torch.bfloat16)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "M, N, K, dtype, threads",
     [

@@ -168,6 +168,7 @@ def test_gemv_simt():
     evaluate_gemv_simt(1, 1024, 1024, "int8", "int32", "int32", with_bias=False)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_gemv_simt_fp8():
     evaluate_gemv_simt(1, 1024, 1024, "float8_e4m3", "float32", "float32", with_bias=False)
     evaluate_gemv_simt(1, 1024, 1024, "float8_e5m2", "float32", "float32", with_bias=False)

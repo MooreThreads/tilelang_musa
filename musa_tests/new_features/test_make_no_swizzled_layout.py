@@ -1,5 +1,6 @@
 import pytest
 import tilelang
+import tilelang.testing
 import torch
 from tilelang import language as T
 
@@ -85,6 +86,7 @@ def no_swizzle_buffer_region_kernel(
     return main
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "M, N, dtype, threads",
     [
@@ -104,6 +106,7 @@ def test_no_swizzle_layout_buffer(M, N, dtype, threads):
     torch.testing.assert_close(out, a, rtol=1e-2, atol=1e-2)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "M, N, dtype, threads",
     [

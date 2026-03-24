@@ -55,6 +55,7 @@ def matmul_kernel_jit(
     return main
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_par_compile():
     configs = [
         (1024, 1024, 1024, 128, 128, 32),

@@ -1,5 +1,6 @@
 import argparse
 import tilelang
+import tilelang.testing
 import tilelang.language as T
 import torch
 import triton
@@ -55,6 +56,7 @@ test_params = [
     for (BLOCK_M, BLOCK_N, BLOCK_K) in block_size_list
     if M % BLOCK_M == 0 and N % BLOCK_N == 0 and K % BLOCK_K == 0
 ]
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize("elem_type, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K", test_params)
 def test_mm_kernel_perf(elem_type, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K):
     device = "musa"

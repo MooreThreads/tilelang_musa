@@ -221,6 +221,7 @@ def test_assert_tl_matmul_bfloat16():
     assert_tl_matmul_correctness(256, 256, 256, "bfloat16", "float32", "float32")
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_assert_tl_matmul_fp8():
     assert_tl_matmul_correctness(128, 128, 128, "float8_e4m3", "float32", "float32")
     assert_tl_matmul_correctness(128, 128, 128, "float8_e5m2", "float32", "float32")
