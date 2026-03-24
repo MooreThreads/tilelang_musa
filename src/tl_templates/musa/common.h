@@ -142,10 +142,16 @@ uint32_t cast_smem_ptr_to_uint(void const *const ptr) {
 // computes dot(a[0:4], b[0:4]) + *c and stores the result back through c.
 template <typename InDatatype, typename OutDatatype>
 TL_DEVICE void DP4A(InDatatype *a, InDatatype *b, OutDatatype *c) {
+  const int c_int = *((int *)c);
+#if defined(__MUSA_ARCH_LIST__) && (__MUSA_ARCH_LIST__) >= 310
   const int a_int = *((int *)a);
   const int b_int = *((int *)b);
-  const int c_int = *((int *)c);
   *c = __dp4a(a_int, b_int, c_int);
+#else
+  const char4 a_vec = *(char4*)a;
+  const char4 b_vec = *(char4*)b;
+  *c = __dp4a(a_vec, b_vec, c_int);
+#endif
 }
 
 // using mutlass abs function for half_t
