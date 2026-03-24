@@ -179,7 +179,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def("tl.TargetIsCuda",
            [](Target target) { return TargetIsCuda(target); })
       .def("tl.TargetIsMusa",
-           [](Target target) { return TargetIsCuda(target); })
+           [](Target target) { return TargetIsMusa(target); })
+      .def("tl.TargetIsQY2",
+           [](Target target) { return TargetIsQY2(target); })
+      .def("tl.TargetIsPH1",
+           [](Target target) { return TargetIsPH1(target); })
       .def("tl.TargetIsRocm",
            [](Target target) { return TargetIsRocm(target); })
       .def("tl.TargetIsVolta",

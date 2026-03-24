@@ -3,15 +3,20 @@ from typing import Optional
 import tilelang.language as T
 import tilelang.testing
 import torch
-from tilelang.utils.target import check_hip_availability
+from tilelang.utils.target import check_hip_availability, determine_target, target_is_qy2
+from tilelang import tvm as tvm
 
+auto_target = tvm.target.Target(determine_target("auto"))
 _IS_HIP_AVAILABLE = check_hip_availability()
+_IS_QY2_AVAILABLE = target_is_qy2(auto_target)
 _DEFAULT_WARPS_PER_GROUP = 4
 
 
 def _resolve_warp_size(warp_size: Optional[int]) -> int:
     if warp_size is not None:
         return int(warp_size)
+    if _IS_QY2_AVAILABLE:
+        return 128
     return 64 if _IS_HIP_AVAILABLE else 32
 
 
