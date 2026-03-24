@@ -1,5 +1,6 @@
 import itertools
 import pytest
+import tilelang.testing
 from . import mm_mma_stage_num1
 
 MNK_CASES = [
@@ -90,6 +91,7 @@ TEST_CASES += [
 
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "M,N,K,bm,bn,bk,dtype,acc_type",
     TEST_CASES,

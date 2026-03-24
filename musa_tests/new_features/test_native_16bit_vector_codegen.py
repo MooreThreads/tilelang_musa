@@ -1,6 +1,7 @@
 import pytest
 import torch
 import tilelang
+import tilelang.testing
 from tilelang import language as T
 from tilelang import tvm
 
@@ -107,6 +108,7 @@ def reference_vector_binary_op(src: torch.Tensor, lanes: int) -> torch.Tensor:
     return torch.cat([lhs + rhs, lhs - rhs], dim=1).to(device=src.device, dtype=src.dtype)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "dtype, lanes, expected_type, old_packed_type",
     [
@@ -127,6 +129,7 @@ def test_native_16bit_vector_alias_is_emitted(dtype, lanes, expected_type, old_p
     assert f"{old_packed_type} b" not in source
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "dtype, lanes, expected_type",
     [
@@ -147,6 +150,7 @@ def test_native_16bit_vector_broadcast_is_emitted(dtype, lanes, expected_type):
     assert "make_" not in source
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "dtype, lanes, expected_type",
     [
@@ -165,6 +169,7 @@ def test_native_16bit_vector_ramp_is_emitted(dtype, lanes, expected_type):
     assert "make_" not in source
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "dtype, lanes, expected_type",
     [
@@ -186,6 +191,7 @@ def test_native_16bit_vector_non_ramp_load_rebuilds_vector(dtype, lanes, expecte
     assert f"*({expected_type}*)(src+" not in normalized_source
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "dtype, lanes, old_lane_access_pattern",
     [
@@ -207,6 +213,7 @@ def test_native_16bit_vector_lane_access_uses_native_indexing(dtype, lanes,
     assert old_lane_access_pattern not in source
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "dtype, torch_dtype, lanes",
     [

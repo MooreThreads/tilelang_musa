@@ -1,6 +1,7 @@
 import pytest
 import torch
 import tilelang
+import tilelang.testing
 import tilelang.language as T
 
 tilelang.disable_cache()
@@ -179,6 +180,7 @@ def kernel_with_vectorized_scalar_robust_force_async_copy_to_shared_disable_thre
     return main
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 @pytest.mark.parametrize(
     "kernel_builder",
     [
@@ -203,11 +205,13 @@ def test_robust_copy_numerical(kernel_builder):
     torch.testing.assert_close(out, expected, rtol=0.0, atol=0.0)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_scalar_robust_copy_to_shared_get_tir():
     func = kernel_with_scalar_robust_copy_to_shared.get_tir()
     assert func is not None
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_scalar_robust_force_async_copy_to_shared_source():
     code = kernel_with_scalar_robust_force_async_copy_to_shared().get_kernel_source()
 
@@ -215,6 +219,7 @@ def test_scalar_robust_force_async_copy_to_shared_source():
     assert "tl::robust_load" not in code
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_vectorized_scalar_force_async_copy_to_shared_source():
     code = kernel_with_vectorized_scalar_force_async_copy_to_shared().get_kernel_source()
 
@@ -222,6 +227,7 @@ def test_vectorized_scalar_force_async_copy_to_shared_source():
     assert "tl::cp_async_wait<0>();" in code
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_vectorized_scalar_force_async_copy_to_shared_source_disable_thread_storage_sync():
     code = kernel_with_vectorized_scalar_force_async_copy_to_shared_disable_thread_storage_sync(
     ).get_kernel_source()
@@ -230,6 +236,7 @@ def test_vectorized_scalar_force_async_copy_to_shared_source_disable_thread_stor
     assert "tl::cp_async_wait<0>();" not in code
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_vectorized_scalar_robust_force_async_copy_to_shared_source():
     code = kernel_with_vectorized_scalar_robust_force_async_copy_to_shared().get_kernel_source()
 
@@ -238,6 +245,7 @@ def test_vectorized_scalar_robust_force_async_copy_to_shared_source():
     assert "tl::robust_load" not in code
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_vectorized_scalar_robust_force_async_copy_to_shared_source_disable_thread_storage_sync():
     code = kernel_with_vectorized_scalar_robust_force_async_copy_to_shared_disable_thread_storage_sync(
     ).get_kernel_source()
@@ -247,6 +255,7 @@ def test_vectorized_scalar_robust_force_async_copy_to_shared_source_disable_thre
     assert "tl::robust_load" not in code
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_zero_sized_robust_async_copy_numerical():
     require_musa()
 

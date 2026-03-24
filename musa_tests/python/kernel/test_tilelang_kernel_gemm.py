@@ -215,6 +215,7 @@ def test_gemm_i8i8i32_tn():
     run_gemm(512, 1024, 768, True, False, "int8", "int8", "int32", 128, 128, 64)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_gemm_f64f64f64_nt():
     run_gemm(512, 512, 512, False, True, "float64", "float64", "float64", 64, 32, 16)
 
