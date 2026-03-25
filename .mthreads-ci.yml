@@ -46,10 +46,9 @@ build-PH1:
     - "git submodule update --init"
     - "cd ${WORKSPACE}/${REPO_NAME}"
     - "export USE_MUSA=1"
-    - "export PATH=/opt/_internal/cpython-3.10.19/bin:$PATH"
     - "export PATH=$(python3.10 -c 'import sys; print(sys.prefix)')/bin:$PATH"
-    - "python3 -m build --wheel -C cmake.define.USE_ALTERNATIVE_LINKER=OFF"
-    - "cd dist && pip install *.whl"
+    - "python3 -m build --wheel --no-isolation -C cmake.define.USE_ALTERNATIVE_LINKER=OFF"
+    - "cd dist && pip install *.whl -i https://pypi.tuna.tsinghua.edu.cn/simple"
   artifacts:
     - type: "oss"
       paths:
