@@ -62,17 +62,17 @@ block_threads_stages_list = [
     (256, 32, 16, 128, 3),
     (256, 32, 32, 128, 3),
     # (256, 32, 64, 128, 3), over shared memory
-    (512, 32, 16, 128, 3),
+    # (512, 32, 16, 128, 3), over shared memory
     # (512, 32, 32, 128, 3), over shared memory
     # (512, 32, 64, 128, 3), over shared memory
     (256, 64, 16, 128, 3),
     (256, 64, 32, 128, 3),
     # (256, 64, 64, 128, 3), over shared memory
-    (512, 64, 16, 128, 3),
+    # (512, 64, 16, 128, 3), over shared memory
     # (512, 64, 32, 128, 3), over shared memory
     # (512, 64, 64, 128, 3), over shared memory
     (256, 128, 16, 128, 3),
-    (256, 128, 32, 128, 3),
+    # (256, 128, 32, 128, 3), over shared memory
     (256, 128, 64, 128, 3),
     # (512, 128, 16, 128, 3), over shared memory
     # (512, 128, 32, 128, 3), over shared memory

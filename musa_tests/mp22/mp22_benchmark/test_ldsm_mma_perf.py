@@ -47,7 +47,7 @@ def get_tflops(latency_ms, M, N, K):
 
 elem_type_list  = [torch.float16, torch.bfloat16] # , torch.float8_e4m3fn], qy2 not support fp8
 size_list       = [(16384, 16384, 16384), (8192, 8192, 8192), (4096, 4096, 4096), (2048, 2048, 2048), (1024, 1024, 1024)]
-block_size_list = [(128, 128, 64), (32, 32, 32)]
+block_size_list = [(32, 32, 32)] # (128, 128, 64) over shared memory
 num_stages_list = [1]
 test_params = [
     (elem_type, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K)

@@ -57,7 +57,7 @@ block_threads_stages_list = [
     # (32, 32, 256, 128, 3), over shared memory
     # (32, 32, 512, 128, 3), over shared memory
     # (32, 64, 128, 128, 3), over shared memory
-    (32, 64, 256, 128, 3),
+    # (32, 64, 256, 128, 3), over shared memory
     # (32, 64, 512, 128, 3), over shared memory
     # (32, 128, 128, 128, 3), over shared memory
     # (32, 128, 256, 128, 3), over shared memory
@@ -66,15 +66,15 @@ block_threads_stages_list = [
     # (64, 16, 256, 128, 3), qy2 required m and n must be multiple of 32
     # (64, 16, 512, 128, 3), over shared memory
     # (64, 32, 128, 128, 3), over shared memory
-    (64, 32, 256, 128, 3),
+    # (64, 32, 256, 128, 3), over shared memory
     # (64, 32, 512, 128, 3), over shared memory
-    (64, 64, 128, 128, 3),
+    # (64, 64, 128, 128, 3), over shared memory
     # (64, 64, 256, 128, 3), over shared memory
     # (64, 64, 512, 128, 3), over shared memory
     # (64, 128, 128, 128, 3), over shared memory
     # (64, 128, 256, 128, 3), over shared memory
     # (64, 128, 512, 128, 3), over shared memory
-    (128, 32, 128, 128, 3),
+    # (128, 32, 128, 128, 3), over shared memory
     # (128, 32, 256, 128, 3), over shared memory
     # (128, 32, 512, 128, 3), over shared memory
     # (128, 64, 128, 128, 3), over shared memory
