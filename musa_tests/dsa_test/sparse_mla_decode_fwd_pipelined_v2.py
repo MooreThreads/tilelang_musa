@@ -3,8 +3,7 @@ import torch
 import tilelang
 from tilelang import language as T
 from tvm import tir
-
-tilelang.disable_cache()
+# tilelang.disable_cache()
 
 
 def get_test_device() -> str:
@@ -51,6 +50,7 @@ def sparse_attention_fwd_kernel_v2(
     *,
     kv_group=1,
     sm_scale=None,
+    block_H=64,
     block_I=64,
     threads=640,
 ):
@@ -79,7 +79,7 @@ def sparse_attention_fwd_kernel_v2(
     accum_dtype = "float"
 
     H = head_kv
-    padded_H = max(tilelang.math.next_power_of_2(head_kv), 64)
+    padded_H = max(tilelang.math.next_power_of_2(head_kv), block_H)
     if padded_H != H:
         assert kv_group == 1
     kv_latent_dtype = "float8_e4m3"
@@ -89,14 +89,14 @@ def sparse_attention_fwd_kernel_v2(
     D_tail = tail_dim
     L = block_I // 8
     dim_bytes = 656
-    if head_kv > 64:
-        assert head_kv % 64 == 0, "head_kv should be a multiple of 64"
-        REPLICATE_H = head_kv // 64
+    if head_kv > block_H:
+        assert head_kv % block_H == 0, "head_kv should be a multiple of block_H"
+        REPLICATE_H = head_kv // block_H
     else:
         REPLICATE_H = 1
 
-    H_per_block = padded_H if REPLICATE_H == 1 else 64
-
+    H_per_block = padded_H if REPLICATE_H == 1 else block_H
+    PV_MMA_N = 64 if block_H == 32 else 128
     @T.prim_func
     def main(
             Q: T.Tensor([seq_len, num_heads, dim + tail_dim], dtype),  # type: ignore
@@ -127,23 +127,21 @@ def sparse_attention_fwd_kernel_v2(
             sum_exp_inv_shared = T.alloc_shared([H_per_block], accum_dtype)
             alpha_shared = T.alloc_shared([H_per_block], accum_dtype)
             is_kv_valid = T.alloc_shared([BI], "bool", scope="shared")
+            kv_indices = T.alloc_shared([BI], "int32", scope="shared")
             Quant_shared = T.alloc_shared([BI, 4], "float32")
 
             bar_q = T.alloc_barrier(arrive_count=512)
-            bar_scale_ready = T.alloc_barrier(arrive_count=128)
-            bar_scale_free = T.alloc_barrier(arrive_count=512)
+            bar_indices_ready = T.alloc_barrier(arrive_count=128)
             bar_kv0_ready = T.alloc_barrier(arrive_count=128)
             bar_kv1_ready = T.alloc_barrier(arrive_count=128)
             bar_kv0_lma_read_ready = T.alloc_barrier(arrive_count=256)
             bar_kv1_lma_read_ready = T.alloc_barrier(arrive_count=256)
             bar_kv0_quant_ready = T.alloc_barrier(arrive_count=256)
             bar_kv1_quant_ready = T.alloc_barrier(arrive_count=256)
-            bar_kpe_ready = T.alloc_barrier(arrive_count=128)
 
             # bar_kv1_read_ready = T.alloc_barrier(arrive_count=256)
             bar_kv0_free = T.alloc_barrier(arrive_count=256)
             bar_kv1_free = T.alloc_barrier(arrive_count=256)
-            bar_kpe_free = T.alloc_barrier(arrive_count=256)
 
             bar_vl0_ready = T.alloc_barrier(arrive_count=256)
             bar_vl1_ready = T.alloc_barrier(arrive_count=256)
@@ -218,46 +216,12 @@ def sparse_attention_fwd_kernel_v2(
                 T.fill(acc_o_l_0, 0)
                 T.fill(acc_o_l_1, 0)
 
-                for i_i in range(T.ceildiv(topk, block_I)):
-                    T.barrier_wait(bar_scale_ready, (i_i & 1))
+                for i_i in range(T.ceildiv(topk, block_I)):                    
+                    T.barrier_wait(bar_kv0_ready, (i_i & 1))
+
                     T.copy(Quant_shared[ldg_ty, 0:2], quant_local_l[0, :])
                     T.copy(Quant_shared[ldg_ty + 32, 0:2], quant_local_l[1, :])
-                    tir.call_extern("void", "__musa_lma_wait")
-                    T.barrier_arrive(bar_scale_free)
 
-                    T.annotate_layout(
-                        {
-                            KV_shared_l[:, :]:
-                                tilelang.layout.make_no_swizzled_layout(KV_shared_l[:, :])
-                        },
-                        allow_reannotation=True,
-                        allow_buffer_region=True)
-                    T.barrier_wait(bar_kv0_ready, (i_i & 1))
-                    # fp8 quant
-                    for r in T.unroll(2):
-                        for u in T.unroll(4):
-                            for v in T.vectorized(4):
-                                kv_reg_l_bf16_load[r * 16 + u * 4 + v] = KV_shared_l[
-                                    (ldg_ty + r * 32),
-                                    64 * u + ldg_tx * 8 + v,
-                                ]
-                    for v in T.vectorized(64):
-                        kv_reg_l_fp16[v] = kv_reg_l_fp8[v]
-                        # debug_K[((ldg_ty + r * 32) % 8) * (block_I // 8) + (ldg_ty + r * 32) // 8, g_i, 64 * u + ldg_tx * 8 + v] = kv_reg_l_fp8[v]
-                    # for v in T.vectorized(64):
-                    #     kv_reg_l_fp16[v] = kv_reg_l_fp16[v]* quant_local_l[v&32//16]
-                    for v in T.vectorized(16):
-                        kv_reg_l[v] = kv_reg_l_fp16[v] * quant_local_l[0, 0]
-                    for v in T.vectorized(16):
-                        kv_reg_l[v + 16] = kv_reg_l_fp16[v + 16] * quant_local_l[0, 1]
-                    for v in T.vectorized(16):
-                        kv_reg_l[v + 32] = kv_reg_l_fp16[v + 32] * quant_local_l[1, 0]
-                    for v in T.vectorized(16):
-                        kv_reg_l[v + 48] = kv_reg_l_fp16[v + 48] * quant_local_l[1, 1]
-
-                    tir.call_extern("void", "__musa_lma_wait")
-                    T.barrier_arrive(bar_kv0_lma_read_ready)
-                    T.barrier_wait(bar_kv0_lma_read_ready, i_i & 1)
                     T.annotate_layout(
                         {
                             KV_shared_l[:, :]:
@@ -266,11 +230,75 @@ def sparse_attention_fwd_kernel_v2(
                         },
                         allow_reannotation=True,
                         allow_buffer_region=True)
+                    # KV_l fp8 quant
+                    # load FP8 form SMEM
+                    # U 01 -> 0-127
                     for r in T.unroll(2):
-                        for u in T.unroll(4):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(4):
+                                kv_reg_l_bf16_load[r * 16 + u * 4 + v] = KV_shared_l[
+                                    (ldg_ty + r * 32),
+                                    64 * u + ldg_tx * 8 + v,
+                                ]
+                    tir.call_extern("void", "__musa_lma_wait")
+
+                    # CVT FP8 -> FP16, KV_l_0
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                idx = r * 32 + u * 8 + v
+                                kv_reg_l_fp16[idx] = kv_reg_l_fp8[idx]
+
+                    # FOP.MUL FP16 * scale > BF16.  KV_l_0
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                idx = r * 32 + u * 8 + v
+                                kv_reg_l[idx] = T.Cast("bfloat16",
+                                                    kv_reg_l_fp16[idx] * quant_local_l[r, 0])
+                    
+                    # STS BF16 KV_l_0
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
                             for v in T.vectorized(8):
                                 KV_shared_l[ldg_ty + r * 32,
                                             64 * u + ldg_tx * 8 + v] = kv_reg_l[r * 32 + u * 8 + v]
+
+                    # load FP8 form SMEM
+                    # U 23 -> 128-255
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(4):
+                                kv_reg_l_bf16_load[r * 16 + (u+2) * 4 + v] = KV_shared_l[
+                                    (ldg_ty + r * 32),
+                                    64 * (u+2) + ldg_tx * 8 + v,
+                                ]
+                    tir.call_extern("void", "__musa_lma_wait")
+                    # T.barrier_arrive(bar_kv0_lma_read_ready)
+                    # CVT FP8 -> FP16, KV_l_1
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                idx = r * 32 + (u+2) * 8 + v
+                                kv_reg_l_fp16[idx] = kv_reg_l_fp8[idx]
+                    
+                    # FOP.MUL FP16 * scale > BF16.  KV_l_1
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                idx = r * 32 + (u+2) * 8 + v
+                                kv_reg_l[idx] = T.Cast("bfloat16",
+                                                    kv_reg_l_fp16[idx] * quant_local_l[r, 1])
+
+                    
+                    # T.barrier_wait(bar_kv0_lma_read_ready, i_i & 1)
+                    # STS BF16 KV_l_1
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                KV_shared_l[ldg_ty + r * 32,
+                                            64 * (u+2) + ldg_tx * 8 + v] = kv_reg_l[r * 32 + (u+2) * 8 + v]
+                    
                     tir.call_extern("void", "__musa_lma_wait")
                     T.barrier_arrive(bar_kv0_quant_ready)
 
@@ -280,16 +308,14 @@ def sparse_attention_fwd_kernel_v2(
 
                     T.barrier_wait(bar_kv0_quant_ready, (i_i & 1))
                     T.gemm(
-                        Q_shared_l,
+                        Q_shared_l[:, :],
                         KV_shared_l[:, :],
                         acc_s,
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow,
                         wg_wait=-1)
-
                     tir.call_extern("void", "__musa_tce_commit_group")
                     tir.call_extern("void", "__musa_tce_wait_group", 0)
-
                     T.barrier_arrive(bar_kv0_free)
 
                     T.barrier_wait(bar_kv1_quant_ready, (i_i & 1))
@@ -309,11 +335,9 @@ def sparse_attention_fwd_kernel_v2(
                         policy=T.GemmWarpPolicy.FullRow,
                         wg_wait=-1)
                     tir.call_extern("void", "__musa_tce_commit_group")
-                    # T.barrier_arrive(bar_kv1_read_ready)
                     tir.call_extern("void", "__musa_tce_wait_group", 0)
-                    T.barrier_arrive(bar_kv1_free)
+                    
 
-                    T.barrier_wait(bar_kpe_ready, (i_i & 1))
                     T.annotate_layout(
                         {
                             K_tail_shared[:, :]:
@@ -331,9 +355,7 @@ def sparse_attention_fwd_kernel_v2(
                         wg_wait=-1)
                     tir.call_extern("void", "__musa_tce_commit_group")
                     tir.call_extern("void", "__musa_tce_wait_group", 0)
-                    T.barrier_arrive(bar_kpe_free)
-                    # for h_i, bi_i in T.Parallel(H_per_block, BI):
-                    #     debug_S[s_i,H0+h_i,bi_i] = acc_s[h_i,bi_i]
+                    T.barrier_arrive(bar_kv1_free)
 
                     # online softmax
                     T.copy(m_i, m_i_prev)
@@ -366,7 +388,7 @@ def sparse_attention_fwd_kernel_v2(
                         {
                             V_shared_0[:, :]:
                                 tilelang.layout.make_sqmma_swizzled_layout(
-                                    V_shared_0[:, :], k_major=False)
+                                    V_shared_0[:, :], continuity=PV_MMA_N, k_major=False)
                         },
                         allow_reannotation=True,
                         allow_buffer_region=True)
@@ -389,7 +411,7 @@ def sparse_attention_fwd_kernel_v2(
                         {
                             V_shared_1[:, :]:
                                 tilelang.layout.make_sqmma_swizzled_layout(
-                                    V_shared_1[:, :], k_major=False)
+                                    V_shared_1[:, :], continuity=PV_MMA_N, k_major=False)
                         },
                         allow_reannotation=True,
                         allow_buffer_region=True)
@@ -453,45 +475,11 @@ def sparse_attention_fwd_kernel_v2(
                 ldg_ty = (tid - 256) // 8
 
                 for i_i in range(T.ceildiv(topk, block_I)):
-                    T.barrier_wait(bar_scale_ready, (i_i & 1))
+                    T.barrier_wait(bar_kv1_ready, (i_i & 1))
+
                     T.copy(Quant_shared[ldg_ty, 2:4], quant_local_r[0, :])
                     T.copy(Quant_shared[ldg_ty + 32, 2:4], quant_local_r[1, :])
-                    tir.call_extern("void", "__musa_lma_wait")
-                    T.barrier_arrive(bar_scale_free)
 
-                    T.barrier_wait(bar_kv1_ready, (i_i & 1))
-                    T.annotate_layout(
-                        {
-                            KV_shared_r[:, :]:
-                                tilelang.layout.make_no_swizzled_layout(KV_shared_r[:, :])
-                        },
-                        allow_reannotation=True,
-                        allow_buffer_region=True)
-                    # fp8 quant
-                    for r in T.unroll(2):
-                        for u in T.unroll(4):
-                            for v in T.vectorized(4):
-                                kv_reg_r_bf16[r * 16 + u * 4 + v] = KV_shared_r[
-                                    ldg_ty + r * 32,
-                                    64 * u + ldg_tx * 8 + v,
-                                ]
-                    for v in T.vectorized(64):
-                        kv_reg_r_fp16[v] = kv_reg_r_fp8[v]
-                        # debug_K[((ldg_ty + r * 32) % 8) * (block_I // 8) + (ldg_ty + r * 32) // 8, g_i, D//2 + 64 * u + ldg_tx * 8 + v] = kv_reg_r_fp8[v]
-                    # for v in T.vectorized(64):
-                    #     kv_reg_r_fp16[v] = kv_reg_r_fp16[v] * quant_local_r[v&32//16]
-                    for v in T.vectorized(16):
-                        kv_reg_r[v] = kv_reg_r_fp16[v] * quant_local_r[0, 0]
-                    for v in T.vectorized(16):
-                        kv_reg_r[v + 16] = kv_reg_r_fp16[v + 16] * quant_local_r[0, 1]
-                    for v in T.vectorized(16):
-                        kv_reg_r[v + 32] = kv_reg_r_fp16[v + 32] * quant_local_r[1, 0]
-                    for v in T.vectorized(16):
-                        kv_reg_r[v + 48] = kv_reg_r_fp16[v + 48] * quant_local_r[1, 1]
-
-                    tir.call_extern("void", "__musa_lma_wait")
-                    T.barrier_arrive(bar_kv1_lma_read_ready)
-                    T.barrier_wait(bar_kv1_lma_read_ready, i_i & 1)
                     T.annotate_layout(
                         {
                             KV_shared_r[:, :]:
@@ -500,11 +488,77 @@ def sparse_attention_fwd_kernel_v2(
                         },
                         allow_reannotation=True,
                         allow_buffer_region=True)
+                    # KV_r fp8 quant
+                    # load FP8 form SMEM
+                    # U 01 -> 0-127
                     for r in T.unroll(2):
-                        for u in T.unroll(4):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(4):
+                                kv_reg_r_bf16[r * 16 + u * 4 + v] = KV_shared_r[
+                                    ldg_ty + r * 32,
+                                    64 * u + ldg_tx * 8 + v,
+                                ]
+                    tir.call_extern("void", "__musa_lma_wait")
+
+                    # CVT FP8 -> FP16, KV_l_0
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                idx = r * 32 + u * 8 + v
+                                kv_reg_r_fp16[idx] = kv_reg_r_fp8[idx]
+
+
+                    # FOP.MUL FP16 * scale > BF16.  KV_l_0
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                idx = r * 32 + u * 8 + v
+                                kv_reg_r[idx] = T.Cast("bfloat16",
+                                                    kv_reg_r_fp16[idx] * quant_local_r[r, 0])
+
+
+                    # STS BF16 KV_r_0
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
                             for v in T.vectorized(8):
                                 KV_shared_r[ldg_ty + r * 32,
                                             64 * u + ldg_tx * 8 + v] = kv_reg_r[r * 32 + u * 8 + v]
+
+                    # load FP8 form SMEM
+                    # U 23 -> 128-255
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(4):
+                                kv_reg_r_bf16[r * 16 + (u+2) * 4 + v] = KV_shared_r[
+                                    (ldg_ty + r * 32),
+                                    64 * (u+2) + ldg_tx * 8 + v,
+                                ]
+                    tir.call_extern("void", "__musa_lma_wait")
+                    # T.barrier_arrive(bar_kv1_lma_read_ready)
+                    # CVT FP8 -> FP16, KV_l_1
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                idx = r * 32 + (u+2) * 8 + v
+                                kv_reg_r_fp16[idx] = kv_reg_r_fp8[idx]
+                    
+                    # FOP.MUL FP16 * scale > BF16.  KV_l_1
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                idx = r * 32 + (u+2) * 8 + v
+                                kv_reg_r[idx] = T.Cast("bfloat16",
+                                                    kv_reg_r_fp16[idx] * quant_local_r[r, 1])
+
+
+                    # T.barrier_wait(bar_kv1_lma_read_ready, i_i & 1)
+                    # STS BF16 KV_r_1
+                    for r in T.unroll(2):
+                        for u in T.unroll(2):
+                            for v in T.vectorized(8):
+                                KV_shared_r[ldg_ty + r * 32,
+                                            64 * (u+2) + ldg_tx * 8 + v] = kv_reg_r[r * 32 + (u+2) * 8 + v]
+                    
                     tir.call_extern("void", "__musa_lma_wait")
                     T.barrier_arrive(bar_kv1_quant_ready)
 
@@ -514,7 +568,7 @@ def sparse_attention_fwd_kernel_v2(
                         {
                             V_shared_0[:, :]:
                                 tilelang.layout.make_sqmma_swizzled_layout(
-                                    V_shared_0[:, :], k_major=False)
+                                    V_shared_0[:, :], continuity=PV_MMA_N, k_major=False)
                         },
                         allow_reannotation=True,
                         allow_buffer_region=True)
@@ -547,7 +601,7 @@ def sparse_attention_fwd_kernel_v2(
                         {
                             V_shared_1[:, :]:
                                 tilelang.layout.make_sqmma_swizzled_layout(
-                                    V_shared_1[:, :], k_major=False)
+                                    V_shared_1[:, :], continuity=PV_MMA_N, k_major=False)
                         },
                         allow_reannotation=True,
                         allow_buffer_region=True)
@@ -586,38 +640,32 @@ def sparse_attention_fwd_kernel_v2(
                 # producer: 128 ldg_ty 16
                 ldg_tx = (tid - 512) % 8
                 ldg_ty = (tid - 512) // 8
+
+                ldg_scale_tx = (tid - 512) % 2
+                ldg_scale_ty = (tid - 512) // 2
+
                 for i_i in range(T.ceildiv(topk, block_I)):
                     # LOAD Indices
                     for r in T.unroll(4):
-                        # indices_local[r] = Indices[s_i, g_i, (i_i) * block_I + r * 16 + ldg_ty]
                         kperm_indices_local[r] = Indices[s_i, g_i,
                                                          (i_i) * block_I + ((r * 16 + ldg_ty) % 8) *
                                                          (block_I // 8) + (r * 16 + ldg_ty) // 8]
                     for r in T.unroll(4):
-                        # mask_local[r] = indices_local[r]>=0
-                        # indices_local[r] = T.if_then_else(mask_local[r], indices_local[r], (seq_len_kv * kv_group * (dim + tail_dim))*2+1)
                         kperm_mask_local[
                             r] = kperm_indices_local[r] >= 0 and kperm_indices_local[r] < seq_len_kv
                         kperm_indices_local[r] = T.if_then_else(
                             kperm_mask_local[r], kperm_indices_local[r],
                             (seq_len_kv * kv_group * (dim_bytes)) * 2)
-                    T.barrier_wait(bar_scale_free, (i_i & 1) ^ 1)
-                    for r in T.unroll(4):
-                        is_kv_valid[((r * 16 + ldg_ty) % 8) * (block_I // 8) +
-                                    (r * 16 + ldg_ty) // 8] = kperm_mask_local[r]
+                    
                     if ldg_tx == 0:
                         for r in T.unroll(4):
-                            for v in T.vectorized(4):
-                                T.copy(
-                                    Quant_scales[kperm_indices_local[r], g_i, 128 + v],
-                                    Quant_shared[r * 16 + ldg_ty, v],
-                                    src_robust_desc=kv_robust_desc,
-                                    force_async_copy=True)
-                    tir.call_extern("void", "__musa_memcpy_g2s_commit_group")
-                    tir.call_extern("void", "__musa_memcpy_g2s_wait_group", 0)
-                    T.barrier_arrive(bar_scale_ready)
+                            is_kv_valid[((r * 16 + ldg_ty) % 8) * (block_I // 8) +
+                                        (r * 16 + ldg_ty) // 8] = kperm_mask_local[r]
+                            kv_indices[((r * 16 + ldg_ty) % 8) * (block_I // 8) +
+                                        (r * 16 + ldg_ty) // 8] = kperm_indices_local[r]
 
                     T.barrier_wait(bar_kv0_free, (i_i & 1) ^ 1)
+
                     # load k0-k3
                     # T.annotate_layout(
                     #         { KV_shared_l[:, :]: tilelang.layout.make_sqmma_swizzled_layout(KV_shared_l[:, :], k_major=True) },
@@ -626,7 +674,8 @@ def sparse_attention_fwd_kernel_v2(
                     T.annotate_layout(
                         {
                             KV_shared_l[:, :]:
-                                tilelang.layout.make_no_swizzled_layout(KV_shared_l[:, :])
+                                tilelang.layout.make_sqmma_swizzled_layout(
+                                    KV_shared_l[:, :], k_major=True)
                         },
                         allow_reannotation=True,
                         allow_buffer_region=True)
@@ -640,13 +689,46 @@ def sparse_attention_fwd_kernel_v2(
                                     force_async_copy=True,
                                     src_robust_desc=kv_robust_desc,
                                 )
+                    
+                    tir.call_extern("void", "__musa_lma_wait")
+                    T.barrier_arrive(bar_indices_ready)
+                    T.barrier_wait(bar_indices_ready, (i_i & 1))
+                    
+                    for c in T.vectorized(2):
+                        T.copy(Quant_scales[
+                            kv_indices[ldg_scale_ty],
+                            g_i,
+                            128 + ldg_scale_tx * 2 + c,
+                        ],
+                        Quant_shared[ldg_scale_ty, ldg_scale_tx * 2 + c],
+                        src_robust_desc=kv_robust_desc,
+                        )
 
                     tir.call_extern("void", "__musa_memcpy_g2s_commit_group")
                     tir.call_extern("void", "__musa_memcpy_g2s_wait_group", 0)
-                    tir.call_extern("void", "__musa_lma_wait")
                     T.barrier_arrive(bar_kv0_ready)
 
                     T.barrier_wait(bar_kv1_free, (i_i & 1) ^ 1)
+
+                    # load k rope
+                    T.annotate_layout(
+                        {
+                            K_tail_shared[:, :]:
+                                tilelang.layout.make_sqmma_swizzled_layout(
+                                    K_tail_shared[:, :], k_major=True)
+                        },
+                        allow_reannotation=True,
+                        allow_buffer_region=True)
+                    for r in T.unroll(4):
+                        for v in T.vectorized(8):
+                            pass
+                            T.copy(
+                                K_pe[kperm_indices_local[r], g_i, D // 2 + 8 + ldg_tx * 8 + v],
+                                K_tail_shared[r * 16 + ldg_ty, ldg_tx * 8 + v],
+                                force_async_copy=True,
+                                src_robust_desc=kv_robust_desc,
+                            )
+                    
                     # load k4-k7
                     # T.annotate_layout(
                     #         { KV_shared_r[:, :]: tilelang.layout.make_sqmma_swizzled_layout(KV_shared_r[:, :], k_major=True) },
@@ -655,7 +737,8 @@ def sparse_attention_fwd_kernel_v2(
                     T.annotate_layout(
                         {
                             KV_shared_r[:, :]:
-                                tilelang.layout.make_no_swizzled_layout(KV_shared_r[:, :])
+                                tilelang.layout.make_sqmma_swizzled_layout(
+                                    KV_shared_r[:, :], k_major=True)
                         },
                         allow_reannotation=True,
                         allow_buffer_region=True)
@@ -674,28 +757,7 @@ def sparse_attention_fwd_kernel_v2(
                     tir.call_extern("void", "__musa_memcpy_g2s_wait_group", 0)
                     T.barrier_arrive(bar_kv1_ready)
 
-                    T.barrier_wait(bar_kpe_free, (i_i & 1) ^ 1)
-                    # load next k rope
-                    T.annotate_layout(
-                        {
-                            K_tail_shared[:, :]:
-                                tilelang.layout.make_sqmma_swizzled_layout(
-                                    K_tail_shared[:, :], k_major=True)
-                        },
-                        allow_reannotation=True,
-                        allow_buffer_region=True)
-                    for r in T.unroll(4):
-                        for v in T.vectorized(8):
-                            pass
-                            T.copy(
-                                K_pe[kperm_indices_local[r], g_i, D // 2 + 8 + ldg_tx * 8 + v],
-                                K_tail_shared[r * 16 + ldg_ty, ldg_tx * 8 + v],
-                                force_async_copy=True,
-                                src_robust_desc=kv_robust_desc,
-                            )
-                    tir.call_extern("void", "__musa_memcpy_g2s_commit_group")
-                    tir.call_extern("void", "__musa_memcpy_g2s_wait_group", 0)
-                    T.barrier_arrive(bar_kpe_ready)
+
 
     return main
 
@@ -854,8 +916,8 @@ def test_sparse_mla_fwd(
 
         ms = do_bench(
             fn,
-            rep=10,
-            warmup=2,
+            _n_warmup=5,
+            _n_repeat=10,
         )
         print(f"Average time: {ms:.3f} ms")
         print("fwd io bandwidth = ", (S * DQK * topk * 2) / (ms * 1e-3) / 1e12)
@@ -878,9 +940,9 @@ def test_sparse_mla_fwd(
 
 if __name__ == "__main__":
     test_sparse_mla_fwd(
-        B=128,
-        S=256,  #1024,
-        SKV=2048,  #1024,
+        B=1,
+        S=196,  #1024,
+        SKV=8192,  #1024,
         H=128,  #64,
         HKV=1,
         DQK=576,
@@ -891,3 +953,4 @@ if __name__ == "__main__":
         perf_test=True,
         threads=512,
     )
+
