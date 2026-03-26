@@ -44,6 +44,8 @@ static constexpr const char *kDisableSafeMemoryLegalize =
 static constexpr const char *kDisableWarpSpecialized =
     "tl.disable_warp_specialized";
 static constexpr const char *kConfigIndexBitwidth = "tl.config_index_bitwidth";
+static constexpr const char *kDisableIndexTypePromotion =
+    "tl.disable_index_type_promotion";
 static constexpr const char *kEnableAggressiveSharedMemoryMerge =
     "tl.enable_aggressive_shared_memory_merge";
 static constexpr const char *kDisableFastMath = "tl.disable_fast_math";

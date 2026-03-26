@@ -39,6 +39,15 @@ class PassConfigKey(str, Enum):
     TL_CONFIG_INDEX_BITWIDTH = "tl.config_index_bitwidth"
     """Bitwidth for configuration indices. Default: 32"""
 
+    TL_DISABLE_INDEX_TYPE_PROMOTION = "tl.disable_index_type_promotion"
+    """Disable automatic promotion of index expressions to wider integer types.
+    Default: False
+
+    When enabled, TileLang will skip index-type promotion entirely in passes
+    such as `tl.FlattenBuffer` and `tl.ConfigIndexBitwidth`. This flag has
+    higher priority than `tl.config_index_bitwidth`.
+    """
+
     TL_DISABLE_TMA_LOWER = "tl.disable_tma_lower"
     """Disable TMA (Tensor Memory Access) lowering. Default: False"""
 
