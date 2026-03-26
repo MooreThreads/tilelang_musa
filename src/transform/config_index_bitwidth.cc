@@ -65,7 +65,8 @@ protected:
       for (const auto &arg : op->args) {
         new_args.push_back(VisitExpr(arg));
       }
-      return Call(DataType::Int(_index_bitwidth_), op->op, new_args, {}, op->span);
+      return Call(DataType::Int(_index_bitwidth_), op->op, new_args, {},
+                  op->span);
     }
     return Parent::VisitExpr_(op);
   }
@@ -188,9 +189,16 @@ private:
 tvm::transform::Pass ConfigIndexBitwidth() {
   using namespace tir::transform;
   auto pass_func = [](PrimFunc f, const IRModule &m, const PassContext &ctx) {
+    tvm::transform::PassContext ctxt = tvm::transform::PassContext::Current();
+    bool disable_index_type_promotion =
+        ctxt->GetConfig(kDisableIndexTypePromotion, Optional<Bool>())
+            .value_or(false);
+    if (disable_index_type_promotion) {
+      return f;
+    }
+
     auto *n = f.CopyOnWrite();
     // Get pass config `tl.config_index_bitwidth`
-    tvm::transform::PassContext ctxt = tvm::transform::PassContext::Current();
     Optional<Integer> opt_config_index_bitwidth =
         ctxt->GetConfig(kConfigIndexBitwidth, Optional<Integer>());
     if (opt_config_index_bitwidth.defined()) {
