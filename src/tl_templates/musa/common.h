@@ -457,6 +457,8 @@ TL_DEVICE float4 vec_exp2_f4(float4 a) {
 #else
   out.x = exp2f(a.x);
   out.y = exp2f(a.y);
+  out.z = exp2f(a.z);
+  out.w = exp2f(a.w);
 #endif
   return out;
 }
