@@ -7,6 +7,16 @@ from tvm import tir
 from tilelang.utils.language import get_buffer_region_from_load
 
 
+def _get_dtype(obj):
+    """Extract dtype from Buffer, BufferRegion, or BufferLoad."""
+    if isinstance(obj, tir.Buffer):
+        return obj.dtype
+    elif hasattr(obj, 'buffer'):   # covers BufferRegion and BufferLoad
+        return obj.buffer.dtype
+    else:
+        raise ValueError(f"Unsupported type for dtype extraction: {type(obj)}")
+
+
 def gemm_v1(
     A: tir.Buffer | tir.Var,
     B: tir.Buffer | tir.Var,
@@ -62,6 +72,17 @@ def gemm_v1(
     B = legalize_arguments(B)
     C = legalize_arguments(C)
     mbar = legalize_arguments(mbar) if mbar is not None else None
+
+    from tilelang.utils.target import determine_target, target_is_qy2
+    from tilelang import tvm as tvm
+    auto_target = tvm.target.Target(determine_target("auto"))
+    
+    C_dtype = _get_dtype(C)
+    if target_is_qy2(auto_target) and C_dtype == "float16":
+        raise AssertionError(
+            "FP16 accumulator is not supported on Qy2 architecture. "
+            "Please use float as accumulator type."
+        )
 
     def retrieve_shape(object: tir.Buffer | tir.BufferRegion) -> list[int]:
         if isinstance(object, tir.Buffer):

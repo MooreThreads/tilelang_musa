@@ -97,8 +97,8 @@ def run_gemm(
     assert stramp in kernel_source, f"Expected {stramp} in the kernel source"
 
 
-@tilelang.testing.requires_musa_compute_version_ge(3, 1)
-def test_gemm_f16f16f16_nn():
+@tilelang.testing.requires_musa_compute_version_eq(2, 2)
+def test_gemm_f16f16f32_nn():
     run_gemm(
         512,
         1024,
@@ -107,7 +107,7 @@ def test_gemm_f16f16f16_nn():
         False,
         "float16",
         "float16",
-        "float16",
+        "float32",
         128,
         256,
         32,
@@ -209,8 +209,6 @@ def run_gemm_jit_kernel(
 
     def ref_program(A, B):
         import torch
-        if dtypeAccum in ("float16", "bfloat16"):
-            return tilelang.testing.matmul_naive(A, B, getattr(torch, dtypeAccum), out_dtype)
         C = torch.matmul(A.to(torch.float), B.to(torch.float))
         C = C.to(out_dtype)
         return C
@@ -221,7 +219,7 @@ def run_gemm_jit_kernel(
     tilelang.testing.torch_assert_close(C, ref_C, atol=1e-2, rtol=1e-2, max_mismatched_ratio=0.05)
 
 
-@tilelang.testing.requires_musa_compute_version_ge(3, 1)
+@tilelang.testing.requires_musa_compute_version_eq(2, 2)
 def test_gemm_jit_kernel():
     run_gemm_jit_kernel(
         512,
@@ -231,7 +229,7 @@ def test_gemm_jit_kernel():
         False,
         "float16",
         "float16",
-        "float16",
+        "float32",
         128,
         256,
         32,
@@ -283,9 +281,9 @@ def run_ctypes_kernel_do_bench(M,
     assert tvm_latency is not None
 
 
-@tilelang.testing.requires_musa_compute_version_ge(3, 1)
+@tilelang.testing.requires_musa_compute_version_eq(2, 2)
 def test_ctypes_kernel_do_bench():
-    run_ctypes_kernel_do_bench(512, 1024, 768, False, False, "float16", "float16", "float16", 128,
+    run_ctypes_kernel_do_bench(512, 1024, 768, False, False, "float16", "float16", "float32", 128,
                                256, 32, 2)
 
 
@@ -337,9 +335,9 @@ def run_ctypes_kernel_multi_stream(M,
             matmul_kernel(tensor_a, tensor_b, tensor_c)
 
 
-@tilelang.testing.requires_musa_compute_version_ge(3, 1)
+@tilelang.testing.requires_musa_compute_version_eq(2, 2)
 def test_ctypes_kernel_multi_stream():
-    run_ctypes_kernel_multi_stream(512, 1024, 768, False, False, "float16", "float16", "float16",
+    run_ctypes_kernel_multi_stream(512, 1024, 768, False, False, "float16", "float16", "float32",
                                    128, 256, 32, 2)
 
 
@@ -394,23 +392,29 @@ def run_ctypes_dynamic_shape(M,
 
     matmul_kernel(tensor_a, tensor_b, tensor_c)
 
-    tensor_ref_c = tilelang.testing.matmul_naive(tensor_a, tensor_b, out_dtype, out_dtype)
+    def ref_program(A, B):
+        import torch
+        C = torch.matmul(A.to(torch.float), B.to(torch.float))
+        C = C.to(out_dtype)
+        return C
+    
+    tensor_ref_c = ref_program(tensor_a, tensor_b)
     tilelang.testing.torch_assert_close(
         tensor_c, tensor_ref_c, atol=1e-2, rtol=1e-2, max_mismatched_ratio=0.05)
 
 
-@tilelang.testing.requires_musa_compute_version_ge(3, 1)
+@tilelang.testing.requires_musa_compute_version_eq(2, 2)
 def test_ctypes_dynamic_shape():
     run_ctypes_dynamic_shape(
-        T.dynamic("m"), 1024, 768, False, False, "float16", "float16", "float16", 128, 256, 32, 2)
+        T.dynamic("m"), 1024, 768, False, False, "float16", "float16", "float32", 128, 256, 32, 2)
 
     run_ctypes_dynamic_shape(
-        T.dynamic("m"), T.dynamic("n"), 768, False, False, "float16", "float16", "float16", 128,
+        T.dynamic("m"), T.dynamic("n"), 768, False, False, "float16", "float16", "float32", 128,
         256, 32, 2)
 
     run_ctypes_dynamic_shape(
         T.dynamic("m"), T.dynamic("n"), T.dynamic("k"), False, False, "float16", "float16",
-        "float16", 128, 256, 32, 2)
+        "float32", 128, 256, 32, 2)
 
 
 if __name__ == "__main__":
