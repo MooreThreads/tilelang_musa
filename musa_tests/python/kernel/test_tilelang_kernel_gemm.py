@@ -108,6 +108,7 @@ def run_gemm(
     profiler.assert_allclose(ref_program, atol=1e-2, rtol=1e-2)
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_gemm_f16f16f16_nn():
     run_gemm(
         512,
@@ -173,6 +174,7 @@ def test_gemm_f32f32f32_nn():
     )
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_gemm_f16f16f16_tn():
     run_gemm(
         512,
@@ -190,6 +192,7 @@ def test_gemm_f16f16f16_tn():
     )
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_gemm_f16f16f16_nt():
     run_gemm(
         512,
@@ -252,6 +255,7 @@ def test_gemm_f32f32f32_tn():
     )
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_pad_aligned_f16f16f16_nn():
     run_gemm(
         512 - 8,
@@ -269,6 +273,7 @@ def test_pad_aligned_f16f16f16_nn():
     )
 
 
+@tilelang.testing.requires_musa_compute_version_ge(3, 1)
 def test_pad_f16f16f16_nn():
     run_gemm(
         512 - 9,

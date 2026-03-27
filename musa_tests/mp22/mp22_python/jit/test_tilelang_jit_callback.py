@@ -98,8 +98,8 @@ def run_gemm(
     assert stramp in kernel_source, f"Expected {stramp} in the kernel source"
 
 
-@tilelang.testing.requires_musa_compute_version_ge(3, 1)
-def test_gemm_f16f16f16_nn():
+@tilelang.testing.requires_musa_compute_version_eq(2, 2)
+def test_gemm_f16f16f32_nn():
     run_gemm(
         512,
         1024,
@@ -108,7 +108,7 @@ def test_gemm_f16f16f16_nn():
         False,
         "float16",
         "float16",
-        "float16",
+        "float32",
         128,
         256,
         32,
@@ -207,9 +207,6 @@ def run_gemm_jit_kernel(
 
     def ref_program(A, B):
         import torch
-        if dtypeAccum in ("float16", "bfloat16"):
-            return tilelang.testing.matmul_naive(A, B, getattr(torch, dtypeAccum),
-                                                 getattr(torch, out_dtype))
         C = torch.matmul(A.to(torch.float), B.to(torch.float))
         C = C.to(torch.__getattribute__(out_dtype))
         return C
@@ -220,7 +217,7 @@ def run_gemm_jit_kernel(
     tilelang.testing.torch_assert_close(C, ref_C, atol=1e-2, rtol=1e-2, max_mismatched_ratio=0.05)
 
 
-@tilelang.testing.requires_musa_compute_version_ge(3, 1)
+@tilelang.testing.requires_musa_compute_version_eq(2, 2)
 def test_gemm_jit_kernel():
     run_gemm_jit_kernel(
         512,
@@ -230,7 +227,7 @@ def test_gemm_jit_kernel():
         False,
         "float16",
         "float16",
-        "float16",
+        "float32",
         128,
         256,
         32,

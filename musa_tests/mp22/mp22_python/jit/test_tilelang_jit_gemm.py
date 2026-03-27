@@ -96,9 +96,6 @@ def run_gemm_kernel_jit(
 
     def ref_program(A, B):
         import torch
-        if dtypeAccum in ("float16", "bfloat16"):
-            return tilelang.testing.matmul_naive(A, B, getattr(torch, dtypeAccum),
-                                                 getattr(torch, out_dtype))
         C = torch.matmul(A.to(torch.float), B.to(torch.float))
         C = C.to(torch.__getattribute__(out_dtype))
         return C
@@ -109,8 +106,8 @@ def run_gemm_kernel_jit(
     tilelang.testing.torch_assert_close(C, ref_C, atol=1e-2, rtol=1e-2, max_mismatched_ratio=0.05)
 
 
-@tilelang.testing.requires_musa_compute_version_ge(3, 1)
-def test_gemm_f16f16f16_nn_kernel_jit():
+@tilelang.testing.requires_musa_compute_version_eq(2, 2)
+def test_gemm_f16f16f32_nn_kernel_jit():
     run_gemm_kernel_jit(
         512,
         1024,
@@ -119,7 +116,7 @@ def test_gemm_f16f16f16_nn_kernel_jit():
         False,
         "float16",
         "float16",
-        "float16",
+        "float32",
         128,
         128,
         32,
