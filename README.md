@@ -6,6 +6,17 @@ Tilelang MUSA is a deeply adapted version of Tile Language for the MUSA platform
 
 <img src=./images/MatmulExample.png />
 
+## New
+
+### 0.1.6.post2+musa3
+
+- Add a high-performance DSA kernel implementation.
+- Supports the vast majority of Tilelang's features, over 95% of the test cases passed.
+
+### 0.1.8+musa1
+
+tilelang_musa0.1.8+musa1 is largely complete and will be officially released once further refinements are made.
+
 ## Tested Devices
 
 Tilelang MUSA already supports S5000, S4000, and M1000.
