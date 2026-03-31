@@ -12,7 +12,7 @@ from tvm import tir
 def run_split_host_device_passes(func: tvm.tir.PrimFunc):
     """Run the necessary passes before and including SplitHostDevice."""
     mod = tvm.IRModule({func.attrs["global_symbol"]: func})
-    mod = tvm.tir.transform.BindTarget(tvm.target.Target("cuda", "c"))(mod)
+    mod = tvm.tir.transform.BindTarget(tvm.target.Target("musa", "c"))(mod)
     mod = tl.transform.InjectAssumes()(mod)
     mod = tl.transform.AnnotateDeviceRegions()(mod)
     mod = tl.transform.SplitHostDevice()(mod)
@@ -77,7 +77,7 @@ def get_param_by_name(func: tvm.tir.PrimFunc, name: str):
     return None
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_split_host_device_with_user_assume():
     """Test that user-defined assumes are correctly copied to device function
     with proper variable substitution.
@@ -128,7 +128,7 @@ def test_split_host_device_with_user_assume():
             )
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_split_host_device_with_buffer_shape_assume():
     """Test that buffer shape assumes (auto-generated) are correctly handled."""
     n = T.dynamic("n")
@@ -162,7 +162,7 @@ def test_split_host_device_with_buffer_shape_assume():
             assert var.same_as(param_m), "Assume 'm' should match parameter 'm'"
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_split_host_device_multiple_assumes():
     """Test with multiple user assumes on the same variable."""
     n = T.dynamic("n")
@@ -195,7 +195,7 @@ def test_split_host_device_multiple_assumes():
             assert var.same_as(param_n), "All assume variables should match parameter"
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_split_host_device_no_dangling_vars():
     """Verify that no dangling variable declarations (like n_1 = T.int32())
     appear in the device function due to incorrect variable handling.

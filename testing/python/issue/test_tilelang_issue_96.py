@@ -40,8 +40,8 @@ def run_gemm_pipeline_test(N, block_M=128, block_N=128, block_K=32):
     jit_kernel = tilelang.compile(func, out_idx=[2])
 
     torch.manual_seed(0)
-    a = torch.randn(N, N, device="cuda", dtype=torch.float16)
-    b = torch.randn(N, N, device="cuda", dtype=torch.float16)
+    a = torch.randn(N, N, device="musa", dtype=torch.float16)
+    b = torch.randn(N, N, device="musa", dtype=torch.float16)
 
     ref_c = a @ b.T
     c = jit_kernel(a, b)

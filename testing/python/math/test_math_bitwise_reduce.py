@@ -50,7 +50,7 @@ def run_single_bitwise_reduce(
     kernel = bitwise_reduce(M, N, block_M, block_N, name, func, clear)
 
     # Generate test data that exercises all bit patterns for robust bitwise reduce testing
-    a = torch.zeros((M, N), device="cuda", dtype=torch.int32)
+    a = torch.zeros((M, N), device="musa", dtype=torch.int32)
 
     # Fill with patterns that will produce meaningful results for bitwise operations:
     # - Different bit patterns across rows/columns
@@ -78,9 +78,9 @@ def run_single_bitwise_reduce(
                 a[i, j] |= 0x1 << (i // 2)
 
     if name == "reduce_bitand":
-        expected = torch.full((M,), -1, device="cuda", dtype=torch.int32)
+        expected = torch.full((M,), -1, device="musa", dtype=torch.int32)
     elif name == "reduce_bitor" or name == "reduce_bitxor":
-        expected = torch.full((M,), 0, device="cuda", dtype=torch.int32)
+        expected = torch.full((M,), 0, device="musa", dtype=torch.int32)
     else:
         raise ValueError("Invalid name: {}".format(name))
 
@@ -100,7 +100,7 @@ def run_single_bitwise_reduce(
     print("✓ {} with clear={} test passed".format(name, clear))
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_bitwise_reduce_ops():
     run_single_bitwise_reduce("reduce_bitand", T.reduce_bitand, clear=True)
     run_single_bitwise_reduce("reduce_bitor", T.reduce_bitor, clear=True)

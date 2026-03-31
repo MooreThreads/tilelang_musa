@@ -43,7 +43,7 @@ def assert_matmul_correctness(M, N, K, block_M, block_N, block_K, in_dtype, out_
     kernel = tilelang.compile(
         func,
         out_idx=-1,
-        target="cuda",
+        target="musa",
         pass_configs={
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
@@ -54,11 +54,11 @@ def assert_matmul_correctness(M, N, K, block_M, block_N, block_K, in_dtype, out_
     assert accum_dtype in [T.int32], "Currently only int32 is supported"
 
     if in_dtype is T.int8:
-        A = torch.randint(-128, 128, (M, K), device="cuda", dtype=torch.int8)
-        B = torch.randint(-128, 128, (N, K), device="cuda", dtype=torch.int8)
+        A = torch.randint(-128, 128, (M, K), device="musa", dtype=torch.int8)
+        B = torch.randint(-128, 128, (N, K), device="musa", dtype=torch.int8)
     elif in_dtype is T.uint8:
-        A = torch.randint(0, 256, (M, K), device="cuda", dtype=torch.uint8)
-        B = torch.randint(0, 256, (N, K), device="cuda", dtype=torch.uint8)
+        A = torch.randint(0, 256, (M, K), device="musa", dtype=torch.uint8)
+        B = torch.randint(0, 256, (N, K), device="musa", dtype=torch.uint8)
     else:
         raise ValueError(f"Unsupported input dtype: {in_dtype}")
 
@@ -72,8 +72,7 @@ def assert_matmul_correctness(M, N, K, block_M, block_N, block_K, in_dtype, out_
     assert diff < 1e-3
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(10)
+@tilelang.testing.requires_musa
 def test_assert_matmul():
     assert_matmul_correctness(1024, 1024, 1024, 128, 128, 128, T.int8, T.int32, T.int32)
     assert_matmul_correctness(1024, 1024, 1024, 128, 128, 128, T.uint8, T.int32, T.int32)

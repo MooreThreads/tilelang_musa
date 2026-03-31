@@ -148,10 +148,10 @@ def _cpu_ref_chained(a, b1, b2):
 def assert_ss_gemm(M, N, K, bM, bN, bK, threads=128):
     """Compile and run an SS GEMM, asserting correctness against a CPU reference."""
     func = matmul_ss(M, N, K, bM, bN, bK, T.bfloat16, T.bfloat16, T.float32, threads)
-    kernel = tilelang.compile(func, out_idx=-1, target="cuda", pass_configs=PASS_CFG)
+    kernel = tilelang.compile(func, out_idx=-1, target="musa", pass_configs=PASS_CFG)
 
-    a = torch.randn(M, K, device="cuda", dtype=torch.bfloat16)
-    b = torch.randn(N, K, device="cuda", dtype=torch.bfloat16)
+    a = torch.randn(M, K, device="musa", dtype=torch.bfloat16)
+    b = torch.randn(N, K, device="musa", dtype=torch.bfloat16)
     ref = (a.cpu().float() @ b.cpu().float().T).to(torch.bfloat16)
 
     out = kernel(a, b).cpu()
@@ -162,42 +162,38 @@ def assert_chained_gemm(M, N1, N2, K, bM, bN1, bN2, bK, threads=128):
     """Compile and run a chained GEMM (SS + TS), verifying tcgen05.st and mma_ts presence."""
     assert bN1 == N1, f"bN1 must equal N1 (full row tile) for chained GEMM, got bN1={bN1}, N1={N1}"
     func = chained_gemm(M, N1, N2, K, bM, bN1, bN2, bK, T.bfloat16, T.bfloat16, T.float32, threads)
-    kernel = tilelang.compile(func, out_idx=-1, target="cuda", pass_configs=PASS_CFG)
+    kernel = tilelang.compile(func, out_idx=-1, target="musa", pass_configs=PASS_CFG)
 
     src = kernel.get_kernel_source()
     assert src is not None
     assert "tcgen05mma_ts" in src, "Expected tcgen05mma_ts in generated code"
     assert "tcgen05_st" in src, "Expected tcgen05_st in generated code"
 
-    a = torch.randn(M, K, device="cuda", dtype=torch.bfloat16)
-    b1 = torch.randn(N1, K, device="cuda", dtype=torch.bfloat16)
-    b2 = torch.randn(N2, N1, device="cuda", dtype=torch.bfloat16)
+    a = torch.randn(M, K, device="musa", dtype=torch.bfloat16)
+    b1 = torch.randn(N1, K, device="musa", dtype=torch.bfloat16)
+    b2 = torch.randn(N2, N1, device="musa", dtype=torch.bfloat16)
     ref = _cpu_ref_chained(a, b1, b2)
 
     out = kernel(a, b1, b2).cpu()
     tilelang.testing.torch_assert_close(out, ref, rtol=1e-2, atol=1e-2)
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(10)
+@tilelang.testing.requires_musa
 def test_ss_gemm_bf16_baseline():
     assert_ss_gemm(128, 128, 128, 128, 128, 128)
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(10)
+@tilelang.testing.requires_musa
 def test_chained_gemm_128():
     assert_chained_gemm(128, 128, 128, 128, 128, 128, 128, 128)
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(10)
+@tilelang.testing.requires_musa
 def test_chained_gemm_256():
     assert_chained_gemm(256, 128, 128, 256, 128, 128, 128, 128)
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(10)
+@tilelang.testing.requires_musa
 def test_chained_gemm_non_power_of_2_k():
     assert_chained_gemm(128, 128, 128, 192, 128, 128, 128, 64)
 

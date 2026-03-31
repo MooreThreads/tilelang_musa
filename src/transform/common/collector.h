@@ -3,6 +3,8 @@
  * \brief Collect information from the IR
  */
 
+#pragma once
+
 #include "arith/ir_visitor_with_analyzer.h"
 #include "tir/analysis/var_use_def_analysis.h"
 #include <tvm/tir/analysis.h>
@@ -69,6 +71,28 @@ private:
   IterVar thread_var_;
   bool is_valid_ = true;
 };
+
+class ForceAsyncCopyAttrFinder : public StmtVisitor {
+public:
+  bool found() const { return found_; }
+
+private:
+  void VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == attr::kForceAsyncCopy) {
+      found_ = true;
+      return;
+    }
+    StmtVisitor::VisitStmt_(op);
+  }
+
+  bool found_{false};
+};
+
+inline bool HasForceAsyncCopyAttr(const Stmt &stmt) {
+  ForceAsyncCopyAttrFinder finder;
+  finder(stmt);
+  return finder.found();
+}
 
 } // namespace tl
 } // namespace tvm

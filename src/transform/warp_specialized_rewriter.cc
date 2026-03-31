@@ -4,6 +4,8 @@
  */
 
 #include "warp_specialized_rewriter.h"
+#include "common/collector.h"
+#include <tvm/target/target.h>
 
 namespace tvm {
 namespace tl {
@@ -290,6 +292,11 @@ static Stmt makeCpAsyncBarrierNoInc(PrimExpr barrier_id) {
   return Evaluate(call);
 }
 
+static Stmt makeWaitGroupStmt(int n = 0) {
+  return Evaluate(Call(DataType::Void(), builtin::ptx_wait_group(),
+                       {IntImm(DataType::Int(32), n)}));
+}
+
 static Stmt makeParityWait(PrimExpr barrier_id, PrimExpr parity) {
   auto call = Call(DataType::Handle(), mbarrier_wait_parity(),
                    {makeGetBarrier(std::move(barrier_id)), std::move(parity)});
@@ -373,6 +380,28 @@ private:
   PrimExpr producer_barrier_idx_;
 };
 
+class ThreadVarReplacer : public StmtExprMutator {
+public:
+  static Stmt Rewrite(Stmt stmt, Var thread_var, PrimExpr replaced) {
+    ThreadVarReplacer rewriter(std::move(thread_var), std::move(replaced));
+    return rewriter(std::move(stmt));
+  }
+
+private:
+  ThreadVarReplacer(Var thread_var, PrimExpr replaced)
+      : thread_var_(std::move(thread_var)), replaced_(std::move(replaced)) {}
+
+  PrimExpr VisitExpr_(const VarNode *var) final {
+    if (var == thread_var_.get()) {
+      return replaced_;
+    }
+    return StmtExprMutator::VisitExpr_(var);
+  }
+
+  Var thread_var_;
+  PrimExpr replaced_;
+};
+
 class ThreadIdxRewriter : public StmtExprMutator {
 public:
   static Stmt Rewrite(Stmt stmt, Var thread_var, PrimExpr replaced,
@@ -437,6 +466,28 @@ private:
   bool maybe_thread_opt_ = false;
   bool do_shuffle_;
   bool has_tma_op_ = false;
+};
+
+class SimtCopyVirtualizer {
+public:
+  static Stmt Rewrite(Stmt stmt, Var thread_var, PrimExpr virtual_extent,
+                      PrimExpr physical_extent) {
+    auto uses_thread_var = [=](const tvm::tir::VarNode *parameter) {
+      return parameter == thread_var.get();
+    };
+    if (!UsesVar(stmt, uses_thread_var)) {
+      return stmt;
+    }
+
+    Var vthread("vthread", thread_var.dtype());
+    PrimExpr virtual_tid = thread_var + vthread * physical_extent;
+    Stmt replaced =
+        ThreadVarReplacer::Rewrite(std::move(stmt), thread_var, virtual_tid);
+    PrimExpr guard = LT(virtual_tid, virtual_extent);
+    Stmt guarded = IfThenElse(guard, replaced, std::nullopt);
+    PrimExpr loop_extent = ceildiv(virtual_extent, physical_extent);
+    return For(vthread, 0, loop_extent, ForKind::kSerial, guarded);
+  }
 };
 
 Block MakeGroupBlock(const Stmt &stmt,
@@ -640,17 +691,34 @@ public:
   WSCodeEmitter(bool is_emitting_producer, const IterVar &thread_iv,
                 Map<Var, Buffer> buffer_data_to_buffer,
                 const WarpSpecializedRoleMarker &marker,
-                bool mbarrier_only = false)
+                bool mbarrier_only = false,
+                bool disable_thread_storage_sync = false,
+                Optional<PrimExpr> simt_virtual_extent = Optional<PrimExpr>(),
+                Optional<PrimExpr> simt_physical_extent = Optional<PrimExpr>())
       : is_emitting_producer_(is_emitting_producer),
         buffer_data_to_buffer_(std::move(buffer_data_to_buffer)),
         marker_(marker), thread_var_(thread_iv->var),
-        mbarrier_only_(mbarrier_only) {}
+        mbarrier_only_(mbarrier_only),
+        disable_thread_storage_sync_(disable_thread_storage_sync),
+        simt_virtual_extent_(std::move(simt_virtual_extent)),
+        simt_physical_extent_(std::move(simt_physical_extent)) {}
 
   bool ReleaseRequiresFullProducerParticipation(int barrier_id) const {
     return released_barrier_full_participation_.count(barrier_id) != 0;
   }
 
+  bool HasSimtCopy() const { return has_simt_copy_; }
+
 private:
+  Stmt MaybeVirtualizeSimtCopy(Stmt stmt, bool has_simt_copy) {
+    if (!has_simt_copy || !simt_virtual_extent_.defined() ||
+        !simt_physical_extent_.defined()) {
+      return stmt;
+    }
+    return SimtCopyVirtualizer::Rewrite(std::move(stmt), thread_var_,
+                                        simt_virtual_extent_.value(),
+                                        simt_physical_extent_.value());
+  }
   void MarkReleasedBarrier(int pattern_idx, bool require_full_participation) {
     for (int s = 0; s < num_stages_; s++) {
       int barrier_id = s + num_barriers_ + num_stages_ * pattern_idx;
@@ -977,15 +1045,20 @@ private:
               stage_ + num_barriers_ + num_stages_ * pattern_idx;
           auto stmt =
               MbarrierRewriter::Rewrite(seq_transformed[i], release_barrier_id);
+          bool force_async_copy = HasForceAsyncCopyAttr(stmt);
           collector.Collect(stmt);
+          bool has_simt_copy = collector.HasSimtCopy();
+          stmt = MaybeVirtualizeSimtCopy(std::move(stmt), has_simt_copy);
+          has_simt_copy_ = has_simt_copy_ || has_simt_copy;
           block_stmt.push_back(stmt);
 
           bool use_cp_async_barrier =
-              cp_async_plan.release_uses_cp_async_barrier[i];
+              cp_async_plan.release_uses_cp_async_barrier[i] ||
+              (force_async_copy && has_simt_copy);
 
           if (map.release_after[i][j]) {
             bool require_full_participation =
-                use_cp_async_barrier || collector.HasSimtCopy();
+                use_cp_async_barrier || has_simt_copy;
             if (use_cp_async_barrier) {
               // For cp.async, the enqueue does not make the destination shared
               // memory visible to the consumer. Release the barrier with
@@ -995,6 +1068,9 @@ private:
               // mbarrier transaction counter, which is managed separately by
               // TMA expect_tx/complete_tx when present.
               block_stmt.push_back(makeCpAsyncBarrierNoInc(release_barrier_id));
+              if (force_async_copy && !disable_thread_storage_sync_) {
+                block_stmt.push_back(makeWaitGroupStmt());
+              }
             } else {
               Stmt arrive = makeArriveBarrier(release_barrier_id);
               if (!require_full_participation) {
@@ -1020,10 +1096,128 @@ private:
         }
       }
     } else { // consumer case
+      struct ConsumerStmtTraits {
+        bool has_gemm{false};
+        bool has_async_wgmma{false};
+        bool has_wait_wgmma{false};
+      };
+      std::vector<ConsumerStmtTraits> stmt_traits(op->seq.size());
+      auto collect_stmt_traits = [&](const Stmt &stmt) {
+        ConsumerStmtTraits traits;
+        PostOrderVisit(stmt, [&](const ObjectRef &obj) {
+          const auto *call = obj.as<CallNode>();
+          if (call == nullptr) {
+            return;
+          }
+          if (call->op.same_as(wait_wgmma())) {
+            traits.has_wait_wgmma = true;
+            return;
+          }
+          bool is_gemm_call =
+              call->op.same_as(tl_gemm()) || call->op.same_as(tl_gemm_sp());
+          if (!is_gemm_call && call->op.same_as(builtin::call_extern()) &&
+              !call->args.empty()) {
+            if (const auto *op_name = call->args[0].as<StringImmNode>()) {
+              std::string name = op_name->value;
+              is_gemm_call = name.find("tl::gemm_") != std::string::npos;
+            }
+          }
+          if (!is_gemm_call) {
+            return;
+          }
+          traits.has_gemm = true;
+          bool has_async_wgmma = true;
+          if (!call->args.empty()) {
+            if (const auto *op_name = call->args[0].as<StringImmNode>()) {
+              has_async_wgmma = std::string(op_name->value).find("false") ==
+                                std::string::npos;
+            }
+          }
+          traits.has_async_wgmma |= has_async_wgmma;
+        });
+        return traits;
+      };
       for (int i = 0; i < static_cast<int>(op->seq.size()); i++) {
-        Array<Stmt> block_stmt = {};
-        if (marker_.GetRole(op->seq[i]) == Role::kProducer)
+        stmt_traits[i] = collect_stmt_traits(seq_transformed[i]);
+      }
+
+      // Keep release-after points after async GEMM consumption is complete.
+      auto remap_release_to_wait = [&](int src_stmt_idx, int wait_stmt_idx) {
+        for (size_t j = 0; j < map.release[src_stmt_idx].size(); j++) {
+          if (!map.release_after[src_stmt_idx][j]) {
+            continue;
+          }
+          int pattern_idx = map.release[src_stmt_idx][j];
+          bool remapped = false;
+          for (size_t k = 0; k < map.release[wait_stmt_idx].size(); k++) {
+            if (map.release[wait_stmt_idx][k] == pattern_idx) {
+              map.release_after[wait_stmt_idx][k] = true;
+              remapped = true;
+              break;
+            }
+          }
+          if (!remapped) {
+            map.release[wait_stmt_idx].push_back(pattern_idx);
+            map.release_after[wait_stmt_idx].push_back(true);
+          }
+          map.release_after[src_stmt_idx][j] = false;
+        }
+      };
+
+      for (int i = 0; i < static_cast<int>(op->seq.size()); i++) {
+        if (marker_.GetRole(op->seq[i]) == Role::kProducer) {
           continue;
+        }
+        // Find async GEMM.
+        if (!stmt_traits[i].has_async_wgmma || stmt_traits[i].has_wait_wgmma) {
+          continue;
+        }
+
+        // Find the next wait_wgmma before the next GEMM.
+        int wait_stmt_idx = -1;
+        for (int j = i + 1; j < static_cast<int>(op->seq.size()); j++) {
+          if (marker_.GetRole(op->seq[j]) == Role::kProducer) {
+            continue;
+          }
+          if (stmt_traits[j].has_gemm) {
+            break;
+          }
+          if (stmt_traits[j].has_wait_wgmma) {
+            wait_stmt_idx = j;
+            break;
+          }
+        }
+        if (wait_stmt_idx == -1) {
+          continue;
+        }
+
+        // Move all release-after points between async_gemm and wait_wgmma to
+        // after wait_wgmma.
+        for (int stmt_idx = i; stmt_idx < wait_stmt_idx; stmt_idx++) {
+          if (marker_.GetRole(op->seq[stmt_idx]) == Role::kProducer) {
+            continue;
+          }
+          remap_release_to_wait(stmt_idx, wait_stmt_idx);
+        }
+      }
+
+      auto emit_group_block = [&](Array<Stmt> block_stmt) {
+        new_body.push_back(MakeGroupBlock(
+            block_stmt.size() == 1 ? block_stmt[0]
+                                   // NOLINTNEXTLINE(performance-move-const-arg)
+                                   : SeqStmt(std::move(block_stmt)),
+            annotations));
+      };
+
+      bool merge_async_gemm_wait = pipeline_info_.op_infos.empty();
+      bool has_pending_gemm_wait_block = false;
+      Array<Stmt> pending_gemm_wait_block;
+
+      for (int i = 0; i < static_cast<int>(op->seq.size()); i++) {
+        if (marker_.GetRole(op->seq[i]) == Role::kProducer) {
+          continue;
+        }
+        Array<Stmt> block_stmt = {};
         for (int pattern_idx : map.acquire[i]) {
           PrimExpr acquire_barrier_id =
               stage_ + num_barriers_ + num_stages_ * pattern_idx;
@@ -1034,22 +1228,55 @@ private:
         }
         block_stmt.push_back(seq_transformed[i]);
         for (size_t j = 0; j < map.release[i].size(); j++) {
-          if (map.release_after[i][j]) {
-            int pattern_idx = map.release[i][j];
-            PrimExpr release_barrier_id =
-                stage_ + num_barriers_ + num_stages_ * pattern_idx;
-            block_stmt.push_back(makeArriveBarrier(release_barrier_id));
-            for (int s = 0; s < num_stages_; s++) {
-              released_barrier_.insert(s + num_barriers_ +
-                                       num_stages_ * pattern_idx);
-            }
+          if (!map.release_after[i][j]) {
+            continue;
+          }
+          int pattern_idx = map.release[i][j];
+          PrimExpr release_barrier_id =
+              stage_ + num_barriers_ + num_stages_ * pattern_idx;
+          block_stmt.push_back(makeArriveBarrier(release_barrier_id));
+          for (int s = 0; s < num_stages_; s++) {
+            released_barrier_.insert(s + num_barriers_ +
+                                     num_stages_ * pattern_idx);
           }
         }
-        new_body.push_back(MakeGroupBlock(
-            block_stmt.size() == 1 ? block_stmt[0]
-                                   // NOLINTNEXTLINE(performance-move-const-arg)
-                                   : SeqStmt(std::move(block_stmt)),
-            annotations));
+
+        if (!merge_async_gemm_wait) {
+          emit_group_block(std::move(block_stmt));
+          continue;
+        }
+
+        // Merge block between async GEMM and wait_wgmma.
+        bool starts_async_gemm_chain =
+            stmt_traits[i].has_async_wgmma && !stmt_traits[i].has_wait_wgmma;
+        if (!has_pending_gemm_wait_block) {
+          if (starts_async_gemm_chain) {
+            has_pending_gemm_wait_block = true;
+            pending_gemm_wait_block = std::move(block_stmt);
+          } else {
+            emit_group_block(std::move(block_stmt));
+          }
+          continue;
+        }
+
+        if (starts_async_gemm_chain) {
+          emit_group_block(std::move(pending_gemm_wait_block));
+          pending_gemm_wait_block = std::move(block_stmt);
+          has_pending_gemm_wait_block = true;
+          continue;
+        }
+
+        for (const Stmt &stmt : block_stmt) {
+          pending_gemm_wait_block.push_back(stmt);
+        }
+        if (stmt_traits[i].has_wait_wgmma) {
+          emit_group_block(std::move(pending_gemm_wait_block));
+          pending_gemm_wait_block = {};
+          has_pending_gemm_wait_block = false;
+        }
+      }
+      if (has_pending_gemm_wait_block) {
+        emit_group_block(std::move(pending_gemm_wait_block));
       }
       // Filter out the producer stmts
       int cur_id = 0;
@@ -1388,19 +1615,52 @@ private:
   std::vector<LoopInfo> loop_stack_;
   Var thread_var_;
   bool mbarrier_only_ = false;
+  bool disable_thread_storage_sync_ = false;
+  Optional<PrimExpr> simt_virtual_extent_;
+  Optional<PrimExpr> simt_physical_extent_;
   PipelineInfo pipeline_info_;
+  bool has_simt_copy_{false};
   friend class WarpSpecializedRewriter;
   std::unordered_set<int> released_barrier_full_participation_;
+};
+
+class ProducerBarrierGuarder : public StmtMutator {
+public:
+  static Stmt Guard(Stmt stmt, PrimExpr guard) {
+    ProducerBarrierGuarder guarder(std::move(guard));
+    return guarder(std::move(stmt));
+  }
+
+private:
+  explicit ProducerBarrierGuarder(PrimExpr guard) : guard_(std::move(guard)) {}
+
+  Stmt VisitStmt_(const EvaluateNode *op) final {
+    if (const auto *call = op->value.as<CallNode>()) {
+      if (call->op.same_as(mbarrier_wait_parity())) {
+        auto eval = StmtMutator::VisitStmt_(op);
+        return IfThenElse(guard_, eval, std::nullopt);
+      }
+    }
+    return StmtMutator::VisitStmt_(op);
+  }
+
+  PrimExpr guard_;
 };
 
 class WarpSpecializedRewriter : public StmtExprMutator {
 public:
   WarpSpecializedRewriter(bool disable_warp_specialized,
-                          bool disable_shuffle_elect)
+                          bool disable_shuffle_elect,
+                          bool disable_thread_storage_sync,
+                          bool single_warp_producer_barrier)
       : disable_warp_specialized_(disable_warp_specialized),
-        disable_shuffle_elect_(disable_shuffle_elect) {}
+        disable_shuffle_elect_(disable_shuffle_elect),
+        disable_thread_storage_sync_(disable_thread_storage_sync),
+        single_warp_producer_barrier_(single_warp_producer_barrier) {}
   static PrimFunc Substitute(PrimFunc f, bool disable_warp_specialized,
-                             bool disable_shuffle_elect) {
+                             bool disable_shuffle_elect,
+                             bool disable_thread_storage_sync,
+                             bool single_warp_producer_barrier) {
     // Check if function only uses threadIdx.x before proceeding
     if (!ThreadTagChecker::HasOnlyThreadIdxX(f)) {
       LOG(WARNING) << "WarpSpecialize will be disabled because the program "
@@ -1411,8 +1671,9 @@ public:
       return f;
     }
 
-    auto T = WarpSpecializedRewriter(disable_warp_specialized,
-                                     disable_shuffle_elect);
+    auto T = WarpSpecializedRewriter(
+        disable_warp_specialized, disable_shuffle_elect,
+        disable_thread_storage_sync, single_warp_producer_barrier);
     T.buffer_lca_ = DetectBufferAccessLCA(f);
     for (auto [buffer, _] : T.buffer_lca_)
       T.buffer_data_to_buffer_.Set(buffer->data, buffer);
@@ -1475,7 +1736,8 @@ private:
 
     if (disable_warp_specialized_) {
       WSCodeEmitter mbarrier_emitter(true, thread_iv_, buffer_data_to_buffer_,
-                                     marker, true);
+                                     marker, true,
+                                     disable_thread_storage_sync_);
       auto code = mbarrier_emitter(block->body);
       int num_barriers = mbarrier_emitter.num_barriers_;
       Array<PrimExpr> barrier_num_threads;
@@ -1490,16 +1752,70 @@ private:
       block_realize.CopyOnWrite()->block = block;
       return block_realize;
     }
-    WSCodeEmitter producer(true, thread_iv_, buffer_data_to_buffer_, marker);
-    WSCodeEmitter consumer(false, thread_iv_, buffer_data_to_buffer_, marker,
-                           false);
-    Stmt producer_code = producer(block->body);
-    Stmt consumer_code = consumer(block->body);
     PrimExpr consumer_thread_extent = thread_iv_->dom->extent;
     PrimExpr producer_thread_extent = thread_iv_->dom->extent;
+    int64_t producer_threads_override = -1;
+    if (block->annotations.defined()) {
+      auto it =
+          block->annotations.find(attr::kWarpSpecializationProducerThreads);
+      if (it != block->annotations.end()) {
+        const auto *imm = (*it).second.as<IntImmNode>();
+        ICHECK(imm) << attr::kWarpSpecializationProducerThreads
+                    << " must be IntImm";
+        producer_threads_override = imm->value;
+      }
+    }
+
     // Need one warp-group for bulk-copy only case
     if (!marker.HasSimtCopy())
       producer_thread_extent = 128;
+
+    bool use_override = false;
+    if (producer_threads_override > 0 && marker.HasSimtCopy()) {
+      int64_t consumer_threads = -1;
+      if (const auto *imm = consumer_thread_extent.as<IntImmNode>()) {
+        consumer_threads = imm->value;
+      }
+      ICHECK(consumer_threads > 0);
+      if (producer_threads_override > consumer_threads) {
+        LOG(WARNING) << "producer_threads(" << producer_threads_override
+                     << ") exceeds consumer threads(" << consumer_threads
+                     << "), ignoring override.";
+      } else if (producer_threads_override == consumer_threads) {
+        LOG(WARNING) << "producer_threads(" << producer_threads_override
+                     << ") equals consumer threads(" << consumer_threads
+                     << "), ignoring override.";
+      } else {
+        producer_thread_extent =
+            IntImm(consumer_thread_extent.dtype(), producer_threads_override);
+        use_override = true;
+      }
+    }
+
+    Optional<PrimExpr> simt_virtual_extent;
+    Optional<PrimExpr> simt_physical_extent;
+    if (use_override) {
+      simt_virtual_extent = consumer_thread_extent;
+      simt_physical_extent = producer_thread_extent;
+    }
+
+    WSCodeEmitter producer(true, thread_iv_, buffer_data_to_buffer_, marker,
+                           false, disable_thread_storage_sync_,
+                           simt_virtual_extent, simt_physical_extent);
+    WSCodeEmitter consumer(false, thread_iv_, buffer_data_to_buffer_, marker,
+                           false, disable_thread_storage_sync_);
+    Stmt producer_code = producer(block->body);
+    Stmt consumer_code = consumer(block->body);
+
+    // On MUSA TMA-only producers, barrier wait/arrive must be executed by one
+    // elected thread in the producer warp-group to match legacy behavior.
+    bool guard_producer_barrier =
+        single_warp_producer_barrier_ && !producer.HasSimtCopy();
+    if (guard_producer_barrier) {
+      auto guard =
+          Call(DataType::Bool(), tl_shuffle_elect(), {producer_thread_extent});
+      producer_code = ProducerBarrierGuarder::Guard(producer_code, guard);
+    }
 
     updated_thread_extent_ = consumer_thread_extent + producer_thread_extent;
 
@@ -1517,12 +1833,13 @@ private:
     int num_barriers = consumer.num_barriers_;
     Array<PrimExpr> barrier_num_threads;
     barrier_num_threads.reserve(num_barriers);
+    int single_warp_arrive_threads = single_warp_producer_barrier_ ? 32 : 1;
     for (int i = 0; i < num_barriers; i++) {
       PrimExpr arrive_thread_count =
           producer.released_barrier_.count(i)
               ? (producer.ReleaseRequiresFullProducerParticipation(i)
                      ? producer_thread_extent
-                     : 1)
+                     : single_warp_arrive_threads)
               : consumer_thread_extent;
       barrier_num_threads.push_back(arrive_thread_count);
     }
@@ -1551,6 +1868,8 @@ private:
   bool need_update_thread_extent_ = false;
   bool disable_warp_specialized_ = false;
   bool disable_shuffle_elect_ = false;
+  bool disable_thread_storage_sync_ = false;
+  bool single_warp_producer_barrier_ = false;
 };
 
 using namespace tir::transform;
@@ -1561,11 +1880,18 @@ tvm::transform::Pass WarpSpecialized() {
         ctx->GetConfig<Bool>(kDisableWarpSpecialized, Bool(false)).value();
     bool disable_shuffle_elect =
         ctx->GetConfig<Bool>(kDisableShuffleElect, Bool(false)).value();
+    bool disable_thread_storage_sync =
+        ctx->GetConfig<Bool>(kDisableThreadStorageSync, Bool(false)).value();
+    bool single_warp_producer_barrier = false;
+    if (auto target = f->GetAttr<Target>(tvm::attr::kTarget)) {
+      single_warp_producer_barrier = target.value()->kind->name == "musa";
+    }
     bool warp_specialized = WarpSpecializedDetector::Detect(f->body);
 
     if (!warp_specialized) {
-      return WarpSpecializedRewriter::Substitute(f, disable_warp_specialized,
-                                                 disable_shuffle_elect);
+      return WarpSpecializedRewriter::Substitute(
+          f, disable_warp_specialized, disable_shuffle_elect,
+          disable_thread_storage_sync, single_warp_producer_barrier);
     } else {
       auto node = ffi::String("default");
       f.CopyOnWrite()->body =

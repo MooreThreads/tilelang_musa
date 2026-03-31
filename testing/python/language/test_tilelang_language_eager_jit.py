@@ -36,9 +36,9 @@ def test_jit2_gemm():
 
             T.copy(C_local, C[by * block_M, bx * block_N])
 
-    A = torch.randn(1024, 1024, dtype=torch.float16, device="cuda")
-    B = torch.randn(1024, 1024, dtype=torch.float16, device="cuda")
-    C = torch.randn(1024, 1024, dtype=torch.float16, device="cuda")
+    A = torch.randn(1024, 1024, dtype=torch.float16, device="musa")
+    B = torch.randn(1024, 1024, dtype=torch.float16, device="musa")
+    C = torch.randn(1024, 1024, dtype=torch.float16, device="musa")
     gemm(A, B, C)
     C_ref = A @ B
     torch.testing.assert_close(C, C_ref, atol=1e-2, rtol=1e-2)
@@ -83,10 +83,10 @@ def test_jit2_gemm_ptr():
     for in_dtype, out_dtype in prod:
         in_dtype = in_dtype.as_torch()
         out_dtype = out_dtype.as_torch()
-        A = torch.randn(1024, 1024, dtype=in_dtype, device="cuda")
-        B = torch.randn(1024, 1024, dtype=in_dtype, device="cuda")
+        A = torch.randn(1024, 1024, dtype=in_dtype, device="musa")
+        B = torch.randn(1024, 1024, dtype=in_dtype, device="musa")
         C_ref = out_dtype(A @ B)
-        C = torch.empty(1024, 1024, dtype=out_dtype, device="cuda")
+        C = torch.empty(1024, 1024, dtype=out_dtype, device="musa")
         gemm_ptr(A, B, C, 1024, 1024, 1024, in_dtype, out_dtype)
         torch.testing.assert_close(C, C_ref, atol=1e-2, rtol=1e-2)
 
@@ -149,14 +149,14 @@ def test_jit2_many_annot():
     tilelang.par_compile([copy.get_tir(T.Tensor((128, 128)), T.Tensor((128, 128))) for copy in [copy1, copy2, copy3, copy4]])
 
     for copy in [copy1, copy2, copy3, copy4]:
-        A = torch.randn(128, 128, device="cuda")
-        B = torch.empty(128, 128, device="cuda")
+        A = torch.randn(128, 128, device="musa")
+        B = torch.empty(128, 128, device="musa")
         copy(A, B)
         assert torch.equal(B, A)
 
     for copy in [copy5, copy6]:
-        A = torch.randn(128, 2, 128, 2, device="cuda")
-        B = torch.randn(128, 2, 128, 2, device="cuda")
+        A = torch.randn(128, 2, 128, 2, device="musa")
+        B = torch.randn(128, 2, 128, 2, device="musa")
         copy(A[:, 0, :, 0], B[:, 0, :, 0])
         assert torch.equal(A[:, 0, :, 0], B[:, 0, :, 0])
 
@@ -208,12 +208,12 @@ def test_jit2_return():
         return copy_impl(A)
 
     for copy in [copy1, copy2, copy3, copy4]:
-        A = torch.randn(128, 128, device="cuda")
+        A = torch.randn(128, 128, device="musa")
         B = copy(A)
         assert torch.equal(B, A)
 
     for copy in [copy5, copy6]:
-        A = torch.randn(128, 2, 128, 2, device="cuda")
+        A = torch.randn(128, 2, 128, 2, device="musa")
         B = copy(A[:, 0, :, 0])
         assert torch.equal(A[:, 0, :, 0], B)
 

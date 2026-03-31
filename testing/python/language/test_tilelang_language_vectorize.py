@@ -29,8 +29,8 @@ def run_vectorize(N, M, stride_A, stride_B):
 
     jit_kernel = vectorize_test(N, M, stride_A, stride_B)
 
-    base_a = torch.randn(stride_A, M, device="cuda", dtype=torch.float32)
-    base_b = torch.zeros(stride_B, M, device="cuda", dtype=torch.float32)
+    base_a = torch.randn(stride_A, M, device="musa", dtype=torch.float32)
+    base_b = torch.zeros(stride_B, M, device="musa", dtype=torch.float32)
     a = torch.as_strided(base_a, size=(N, M), stride=(1, stride_A))
     b = torch.as_strided(base_b, size=(N, M), stride=(1, stride_B))
 
@@ -82,9 +82,9 @@ def run_vectorize_invariant_index(N, M, K):
 
     jit_kernel = vectorize_test_invariant_index(N, M, K)
 
-    a = torch.randn(N, M, device="cuda", dtype=torch.float32)
-    b = torch.zeros(N, M, device="cuda", dtype=torch.float32)
-    c = torch.randn(N, M // K, device="cuda", dtype=torch.float32)
+    a = torch.randn(N, M, device="musa", dtype=torch.float32)
+    b = torch.zeros(N, M, device="musa", dtype=torch.float32)
+    c = torch.randn(N, M // K, device="musa", dtype=torch.float32)
 
     jit_kernel(a, b, c)
 
@@ -126,7 +126,7 @@ def vectorize_test_all_dtypes(dtype, vec_num):
     return main
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -145,7 +145,9 @@ def vectorize_test_all_dtypes(dtype, vec_num):
 )
 @pytest.mark.parametrize("vec_num", [1, 2, 4, 8])
 def test_vectorize_all_dtypes(dtype, vec_num):
-    x = torch.empty((64,), dtype=dtype, device="cuda")
+    if dtype == getattr(torch, "float8_e8m0fnu", None):
+        pytest.skip("MUSA SDK does not support float8_e8m0fnu yet")
+    x = torch.empty((64,), dtype=dtype, device="musa")
     kernel = vectorize_test_all_dtypes(dtype, vec_num)
     kernel(x)
 
@@ -160,7 +162,7 @@ def vectorize_broadcast_int8(vec_num):
             a[i] = b
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 @pytest.mark.parametrize("vec_num", [4, 32])
 def test_vectorize_broadcast_int8(vec_num):
     """Test broadcasting a non-constant int8 value to a vectorized store."""

@@ -44,7 +44,7 @@ def test_lower_ptx_async_copy_rewrites_plain_parallel_copy():
             S[i] = A[i]
         B[0] = S[0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -69,7 +69,7 @@ def test_lower_ptx_async_copy_supports_multi_dim_indices():
             S[i, j] = A[i, j]
         B[0, 0] = S[0, 0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -95,7 +95,7 @@ def test_lower_ptx_async_copy_rewrites_vectorized_float16_loop():
                 S[i * 8 + v] = A[i * 8 + v]
         B[0] = S[0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -123,7 +123,7 @@ def test_lower_ptx_async_copy_hoists_sync_out_of_predicated_block():
                 S[vi] = A[vi]
         B[0] = S[0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -161,7 +161,7 @@ def test_lower_ptx_async_copy_respects_enable_async_copy_config():
             S[i] = A[i]
         B[0] = S[0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -189,7 +189,7 @@ def test_lower_ptx_async_copy_does_not_duplicate_existing_sync():
         T.ptx_wait_group(0)
         B[0] = S[0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -215,7 +215,7 @@ def test_lower_ptx_async_copy_inserts_commit_before_existing_wait():
         T.ptx_wait_group(0)
         B[0] = S[0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -241,7 +241,7 @@ def test_lower_ptx_async_copy_keeps_sync_out_of_inner_unrolled_loops_in_pipeline
                 S[ko * 4 + i] = A[ko * 4 + i]
             B[ko] = S[ko]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -289,7 +289,7 @@ def test_lower_ptx_async_copy_from_vectorized_loop():
             S[i] = A[i]
         B[0] = S[0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -312,7 +312,7 @@ def test_lower_ptx_async_copy_skips_vectorized_broadcast_source():
                 S[i * 4 + v] = A[i * 4]
         B[0] = S[0]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 
@@ -335,7 +335,7 @@ def test_lower_ptx_async_copy_from_ramp():
         S[0:4] = A[0:4]
         B[0:4] = S[0:4]
 
-    target = tvm.target.Target("cuda -arch=sm_80")
+    target = tvm.target.Target("musa -arch=mp_80")
     func = before.with_attr("global_symbol", "main").with_attr("target", target)
     mod = tvm.IRModule.from_expr(func)
 

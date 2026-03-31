@@ -3,6 +3,7 @@
  * \brief Lower the tile op for further codegen.
  */
 
+#include <string>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
@@ -108,6 +109,75 @@ private:
   }
 
   Map<Buffer, Layout> layout_remap_;
+};
+
+class BufferGemmCollector : public StmtExprVisitor {
+public:
+  BufferGemmCollector() { Clear(); }
+
+  void Clear() { buffer_var_gemm_.clear(); }
+
+  void Collect(const Stmt &stmt) { VisitStmt(stmt); }
+
+  Array<Var> GetBufferVarGemm() { return buffer_var_gemm_; }
+
+private:
+  Optional<Var> ExtractBufferVarFromArg(const PrimExpr &arg) const {
+    if (const auto *call = arg.as<CallNode>()) {
+      // Legacy path: T.tvm_access_ptr(dtype, data, offset, extent, rw_mask)
+      if (call->op.same_as(builtin::tvm_access_ptr())) {
+        if (const auto *var = call->args[1].as<VarNode>()) {
+          return tvm::ffi::GetRef<Var>(var);
+        }
+      }
+      // Compatibility path: tl.access_ptr(BufferLoad(...), extent, rw_mask)
+      if (call->op.same_as(tl::access_ptr())) {
+        if (const auto *load = call->args[0].as<BufferLoadNode>()) {
+          return load->buffer->data;
+        }
+      }
+      // Compatibility path: address_of(BufferLoad(...))
+      if (call->op.same_as(builtin::address_of())) {
+        if (const auto *load = call->args[0].as<BufferLoadNode>()) {
+          return load->buffer->data;
+        }
+      }
+    }
+
+    // Current GEMM path: BufferLoad/BufferRegion/tl.region(...)
+    if (IsBufferLikeExpr(arg)) {
+      BufferRegion region = NormalizeToBufferRegion(arg);
+      return region->buffer->data;
+    }
+    return Optional<Var>();
+  }
+
+  void VisitStmt_(const EvaluateNode *op) final {
+    const CallNode *call_node = op->value.as<CallNode>();
+    if (!call_node) {
+      return;
+    }
+    auto call = Downcast<Call>(call_node);
+    if (call->op.same_as(Gemm::Get()) || call->op.same_as(GemmSP::Get())) {
+      ICHECK_GE(call->args.size(), 3U)
+          << "GEMM call expects at least 3 args, but got " << call->args.size();
+
+      Optional<Var> srcA_buffer_var = ExtractBufferVarFromArg(call->args[0]);
+      Optional<Var> srcB_buffer_var = ExtractBufferVarFromArg(call->args[1]);
+      Optional<Var> dst_buffer_var = ExtractBufferVarFromArg(call->args[2]);
+      ICHECK(srcA_buffer_var.defined())
+          << "Unable to resolve GEMM arg0 to a buffer var: " << call->args[0];
+      ICHECK(srcB_buffer_var.defined())
+          << "Unable to resolve GEMM arg1 to a buffer var: " << call->args[1];
+      ICHECK(dst_buffer_var.defined())
+          << "Unable to resolve GEMM arg2 to a buffer var: " << call->args[2];
+      buffer_var_gemm_.push_back(srcA_buffer_var.value());
+      buffer_var_gemm_.push_back(srcB_buffer_var.value());
+      buffer_var_gemm_.push_back(dst_buffer_var.value());
+    }
+  }
+
+  Array<Var> buffer_var_gemm_;
 };
 
 /*!
@@ -216,6 +286,11 @@ public:
     auto target = f->GetAttr<Target>(tvm::attr::kTarget);
     ICHECK(target.defined()) << "LowerTileOpPass: Require the target attribute";
     substituter.target_ = target.value();
+    // Track GEMM-related buffers so copy lowering can avoid incompatible
+    // one-dimensional TMA paths for swizzled GEMM tensors.
+    BufferGemmCollector collector;
+    collector.Collect(f->body);
+    substituter.buffer_var_gemm_ = collector.GetBufferVarGemm();
     PrimFuncNode *fptr = f.CopyOnWrite();
     fptr->body = substituter.VisitStmt(f->body);
     fptr->body =
@@ -237,6 +312,34 @@ public:
 private:
   using arith::IRMutatorWithAnalyzer::IRMutatorWithAnalyzer;
 
+  void SetLayoutSQMMA(const Layout &layout, Bool is_sqmma) {
+    if (layout_sqmma_.count(layout)) {
+      ICHECK(layout_sqmma_[layout]->value == is_sqmma->value)
+          << "sqmma mismatch for layout " << layout->DebugOutput();
+    } else {
+      layout_sqmma_.Set(layout, is_sqmma);
+    }
+  }
+
+  void SetLayoutKMajor(const Layout &layout, Bool k_major) {
+    if (layout_k_major_.count(layout)) {
+      ICHECK(layout_k_major_[layout]->value == k_major->value)
+          << "k_major mismatch for layout " << layout->DebugOutput();
+    } else {
+      layout_k_major_.Set(layout, k_major);
+    }
+  }
+
+  void SetLayoutExprHint(Map<Layout, PrimExpr> *dst, const Layout &layout,
+                         PrimExpr value, const char *hint_name) {
+    if (dst->count(layout)) {
+      ICHECK(StructuralEqual()((*dst)[layout], value))
+          << hint_name << " mismatch for layout " << layout->DebugOutput();
+    } else {
+      dst->Set(layout, value);
+    }
+  }
+
   Stmt VisitStmt_(const BlockNode *op) final {
     // Record the mapping from buffer data var to buffer for later lookup
     for (auto buffer : op->alloc_buffers) {
@@ -248,7 +351,6 @@ private:
     for (auto buffer : op->alloc_buffers) {
       buffer_data_to_buffer_.Set(buffer->data, buffer);
     }
-    Map<Var, Layout> vmap;
     if (op->annotations.count(attr::kLayoutMap)) {
       auto layout_map = op->annotations.at(attr::kLayoutMap)
                             .as<Map<Buffer, Layout>>()
@@ -259,11 +361,52 @@ private:
         layout_map_.Set(buffer, layout);
       }
     }
+    if (op->annotations.count("layout_override_seq")) {
+      auto seq_map_opt = op->annotations.Get("layout_override_seq")
+                             ->as<Map<tvm::ffi::String, Map<Var, Layout>>>();
+      if (seq_map_opt.has_value()) {
+        for (const auto &[step_str, step_layouts] : seq_map_opt.value()) {
+          int64_t step = std::stoll(std::string(step_str));
+          LayoutMap resolved_step_layouts;
+          for (const auto &[var, layout] : step_layouts) {
+            if (!buffer_data_to_buffer_.count(var)) {
+              continue;
+            }
+            resolved_step_layouts.Set(buffer_data_to_buffer_[var], layout);
+          }
+          layout_override_steps_[step] = resolved_step_layouts;
+        }
+      }
+    }
+    if (op->annotations.count(attr::kKMajorMap)) {
+      auto k_major_map =
+          op->annotations.at(attr::kKMajorMap).as<Map<Layout, Bool>>().value();
+      for (const auto &[layout, k_major] : k_major_map) {
+        SetLayoutKMajor(layout, k_major);
+      }
+    }
+    if (op->annotations.count(attr::kSqmmaMap)) {
+      auto sqmma_map =
+          op->annotations.at(attr::kSqmmaMap).as<Map<Layout, Bool>>().value();
+      for (const auto &[layout, is_sqmma] : sqmma_map) {
+        SetLayoutSQMMA(layout, is_sqmma);
+      }
+    }
+    if (op->annotations.count(attr::kSqmmaInstSplitMap)) {
+      auto inst_split_map = op->annotations.at(attr::kSqmmaInstSplitMap)
+                                .as<Map<Layout, PrimExpr>>()
+                                .value();
+      for (const auto &[layout, inst_split] : inst_split_map) {
+        SetLayoutExprHint(&layout_sqmma_inst_split_, layout, inst_split,
+                          "sqmma inst split");
+      }
+    }
     // Begin a new workspace collection frame for this block scope
     workspace_stack_.emplace_back();
 
     auto block = Downcast<Block>(arith::IRMutatorWithAnalyzer::VisitStmt_(op));
     auto block_ptr = block.CopyOnWrite();
+    block_ptr->annotations.erase("layout_override_seq");
     for (size_t i = 0; i < block->alloc_buffers.size(); i++) {
       auto buffer = block->alloc_buffers[i];
       if (buffer_remap_.count(buffer)) {
@@ -963,6 +1106,23 @@ private:
     // Do not analysis the call node to the global function.
     if (call && call->op.as<GlobalVarNode>())
       return Downcast<Evaluate>(IRMutatorWithAnalyzer::VisitStmt_(op));
+    if (call && call->op.same_as(tl::layout_marker())) {
+      ICHECK_EQ(call->args.size(), 1U)
+          << "tl.layout_marker expects one integer step argument";
+      const auto *step_imm = call->args[0].as<IntImmNode>();
+      ICHECK(step_imm) << "tl.layout_marker step must be IntImm";
+      int64_t step = step_imm->value;
+      if (layout_override_steps_.count(step)) {
+        auto step_layouts = layout_override_steps_[step];
+        for (const auto &[buffer, layout] : step_layouts) {
+          layout_map_.Set(buffer, layout);
+          if (buffer_remap_.count(buffer)) {
+            layout_map_.Set(buffer_remap_[buffer], layout);
+          }
+        }
+      }
+      return Evaluate(IntImm(DataType::Int(32), 0));
+    }
 
     auto tile_op = ParseOperator(tvm::ffi::GetRef<Stmt>(op));
     if (!tile_op.defined())
@@ -980,6 +1140,17 @@ private:
         workspace_stack_.emplace_back(Array<Buffer>{workspace});
       }
       return workspace.access_ptr(2); // write
+    };
+    AddBarrierCallback barrier_callback = [this](int64_t arrive_count) {
+      auto count = IntImm(DataType::Int(32), static_cast<int>(arrive_count));
+      auto barrier = decl_buffer({count}, DataType::UInt(64),
+                                 "reduce_sync_barrier", "shared.reduce_bar");
+      if (!workspace_stack_.empty()) {
+        workspace_stack_.back().push_back(barrier);
+      } else {
+        workspace_stack_.emplace_back(Array<Buffer>{barrier});
+      }
+      return barrier;
     };
 
     Range thread_bounds;
@@ -1004,7 +1175,9 @@ private:
 
     auto lowered = tile_op->Lower(
         LowerArgs{target_, thread_bounds, thread_var_->var, callback,
-                  layout_map_, buffer_remap_, let_var_to_expr,
+                  barrier_callback, layout_map_, buffer_remap_,
+                  buffer_var_gemm_, layout_sqmma_, layout_k_major_,
+                  layout_sqmma_inst_split_, let_var_to_expr,
                   /*in_pipeline=*/pipelined_depth_ > 0},
         analyzer_);
 
@@ -1214,14 +1387,15 @@ private:
       }
     });
 
-    // Check if vectorizable cast operations exist
+    // Check if vectorizable cast operations exist.
+    // MUSA reuses the same vectorized cast type pairs as CUDA codegen.
     bool has_cast_operations = false;
     PostOrderVisit(for_node->body, [&](const ObjectRef &obj) {
       if (const auto *cast = obj.as<CastNode>()) {
         DataType from_ty = cast->value.dtype();
         DataType target_ty = cast->dtype;
         if (IsCudaVectorizableCast(from_ty, target_ty) &&
-            TargetIsCuda(Target::Current())) {
+            (TargetIsCuda(target_) || TargetIsMusa(target_))) {
           has_cast_operations = true;
         }
       }
@@ -1274,6 +1448,11 @@ private:
   std::unordered_map<Var, Buffer, ObjectPtrHash, ObjectPtrEqual> buffer_map_;
   Map<Var, Var> var_remap_;
   bool has_tma_{false};
+  Array<Var> buffer_var_gemm_;
+  Map<Layout, Bool> layout_sqmma_;
+  Map<Layout, Bool> layout_k_major_;
+  Map<Layout, PrimExpr> layout_sqmma_inst_split_;
+  std::unordered_map<int64_t, LayoutMap> layout_override_steps_;
   // Flag to indicate we are inside a TMA context (tma_load, tma_load_im2col,
   // tma_store). When true, HandleAccessPtrAndOffset only updates buffer data
   // without recomputing indices, since swizzle is encoded in TMA descriptor

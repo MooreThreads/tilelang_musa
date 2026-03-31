@@ -13,6 +13,7 @@ namespace tvm {
 namespace tl {
 
 bool TargetIsCuda(Target target);
+bool TargetIsMusa(Target target);
 bool TargetIsRocm(Target target);
 bool TargetIsMetal(Target target);
 
@@ -24,6 +25,8 @@ bool TargetIsSm100(Target target);
 bool TargetIsSM120(Target target);
 bool TargetIsCDNA(Target target);
 bool TargetIsGfx950(Target target);
+bool TargetIsQY2(Target target);
+bool TargetIsPH1(Target target);
 
 bool TargetHasAsyncCopy(Target target);
 bool TargetHasLdmatrix(Target target);

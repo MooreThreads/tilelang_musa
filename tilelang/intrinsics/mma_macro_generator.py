@@ -31,6 +31,19 @@ from tilelang.intrinsics.mma_layout import (
 lift = convert
 
 
+def _is_musa_target() -> bool:
+    target = tvm.target.Target.current(allow_none=True)
+    if target is not None:
+        return target.kind.name == "musa"
+    try:
+        from tilelang.utils.target import determine_target
+
+        auto_target = determine_target("auto", return_object=True)
+        return auto_target.kind.name == "musa"
+    except Exception:
+        return False
+
+
 class TensorCoreIntrinEmitter:
     """
     To eliminate Python syntax within TIR Macro.
@@ -282,8 +295,10 @@ class TensorCoreIntrinEmitter:
         local_size_a = self.local_size_a
         a_dtype = self.a_dtype
         a_transposed = self.a_transposed
-        # ldmatrix cannot be used for int8 + trans case.
+        # ldmatrix cannot be used for int8 + trans case and is currently
+        # disabled on MUSA due incompatible lowering/runtime helper behavior.
         ldmatrix_available = not (DataType(a_dtype).bits != 16 and a_transposed)
+        ldmatrix_available = ldmatrix_available and not _is_musa_target()
 
         def mma_load_layout(i, j):
             return i, j
@@ -408,8 +423,10 @@ class TensorCoreIntrinEmitter:
         B_other = [r.min for r in B_region.region[:-2]]
         B_stride_last = B_buf.shape[-1]
         replicate_b = self.n_dim == 16
-        # ldmatrix cannot be used for int8 + trans case.
+        # ldmatrix cannot be used for int8 + trans case and is currently
+        # disabled on MUSA due incompatible lowering/runtime helper behavior.
         ldmatrix_available = not (DataType(b_dtype).bits != 16 and not b_transposed)
+        ldmatrix_available = ldmatrix_available and not _is_musa_target()
 
         def mma_load_layout(i, j):
             return i, j

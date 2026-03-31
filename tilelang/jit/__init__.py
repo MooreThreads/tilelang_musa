@@ -259,7 +259,7 @@ class JITImpl(Generic[_P, _KP, _T, _Ret]):
         Function signature of the original function.
     mode : Literal["auto", "lazy", "eager"]
         Execution mode. "auto" infers from function behavior.
-    func : JITFunc
+    func : PrimFunc or JITFunc
         The wrapped function object.
     """
 
@@ -275,7 +275,7 @@ class JITImpl(Generic[_P, _KP, _T, _Ret]):
     signature: inspect.Signature
     mode: Literal["auto", "lazy", "eager"]
     # place func at the last element for better __repr__
-    func: JITFunc[_KP, _T]
+    func: PrimFunc[_KP, _T] | JITFunc[_KP, _T]
 
     def __post_init__(self):
         if self.debug_root_path is not None and not path.isabs(self.debug_root_path):
@@ -319,7 +319,8 @@ class JITImpl(Generic[_P, _KP, _T, _Ret]):
     def initialize_jit_mode(self, *args: _P.args, **kwargs: _P.kwargs) -> Literal["lazy", "eager"]:
         if self.mode == "auto":
             self.mode = self._infer_jit_mode(*args, **kwargs)
-        self.func.set_mode(self.mode)
+        if isinstance(self.func, JITFunc):
+            self.func.set_mode(self.mode)
         if self.mode == "eager" and self.out_idx is not None:
             raise ValueError("out_idx is only supported in lazy mode. In eager mode, use T.empty() to declare output tensors instead.")
         return self.mode
@@ -440,7 +441,16 @@ class JITImpl(Generic[_P, _KP, _T, _Ret]):
         # infer mode early, before parse_args needs it
         if self.mode == "auto":
             self.mode = self._infer_jit_mode(*args, **kwargs)
-            self.func.set_mode(self.mode)
+            if isinstance(self.func, JITFunc):
+                self.func.set_mode(self.mode)
+
+        if isinstance(self.func, PrimFunc):
+            key = ("__primfunc__",)
+            kernel = self._kernel_cache.get(key, None)
+            if kernel is None:
+                kernel = self.compile()
+                self._kernel_cache[key] = kernel
+            return kernel
 
         key, kernel_args = self.func.parse_args(*args, **kwargs)
         kernel = self._kernel_cache.get(key, None)
@@ -528,10 +538,21 @@ def jit(
     )
 
     def decorator(func: Callable[_P, _T]):
-        mode = "auto"
-        pf: JITFunc[_P, _T] = prim_func(func, eager_jit=True)
-        func_source = inspect.getsource(pf.orig_func)
-        signature = inspect.signature(pf.orig_func)
+        mode: Literal["auto", "lazy", "eager"] = "auto"
+        if isinstance(func, PrimFunc):
+            pf: PrimFunc[_P, _T] | JITFunc[_P, _T] = func
+            mode = "lazy"
+            orig_func = getattr(func, "orig_func", None)
+            if callable(orig_func):
+                func_source = inspect.getsource(orig_func)
+                signature = inspect.signature(orig_func)
+            else:
+                func_source = func.script()
+                signature = inspect.Signature()
+        else:
+            pf = prim_func(func, eager_jit=True)
+            func_source = inspect.getsource(pf.orig_func)
+            signature = inspect.signature(pf.orig_func)
 
         return JITImpl(
             func=pf,

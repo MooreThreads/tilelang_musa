@@ -82,7 +82,7 @@ def test_target_host_removed():
     class before:
         @T.prim_func
         def main(A: T.Buffer(1, "float32")):
-            T.func_attr({"global_symbol": "main", "target": T.target("cuda", host=host)})
+            T.func_attr({"global_symbol": "main", "target": T.target("musa", host=host)})
             T.evaluate(0)
 
     after = tilelang.transform.MakePackedAPI()(before)

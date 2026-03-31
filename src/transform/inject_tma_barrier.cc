@@ -464,7 +464,12 @@ public:
       for (size_t i{0}; i < cur_n; ++i) {
         auto it = barrier_thread_counts_.find(static_cast<int>(i));
         if (it != barrier_thread_counts_.end()) {
-          new_args.push_back(Integer(it->second));
+          int thread_count = it->second;
+          if (const auto *old_imm = op->args[i].as<IntImmNode>()) {
+            thread_count =
+                std::max(thread_count, static_cast<int>(old_imm->value));
+          }
+          new_args.push_back(Integer(thread_count));
         } else {
           new_args.push_back(op->args[i]);
         }
@@ -496,17 +501,23 @@ public:
   TmaBarrierRewriter(arith::Analyzer *analyzer,
                      Map<ObjectRef, PrimExpr> tma_op_to_barrier_id,
                      Map<PrimExpr, IntImm> barrier_id_to_range,
-                     bool has_create_list_of_mbarrier)
+                     bool has_create_list_of_mbarrier,
+                     bool single_warp_arrive)
       : IRMutatorWithAnalyzer(analyzer),
         tma_op_to_barrier_id_(std::move(tma_op_to_barrier_id)),
         barrier_id_to_range_(std::move(barrier_id_to_range)),
-        has_create_list_of_mbarrier_(has_create_list_of_mbarrier) {}
+        has_create_list_of_mbarrier_(has_create_list_of_mbarrier),
+        single_warp_arrive_(single_warp_arrive) {}
 
   static PrimFunc Rewrite(PrimFunc f, arith::Analyzer *analyzer) {
     auto buffer_lca = DetectBufferAccessLCA(f);
     Map<Var, Buffer> buffer_data_to_buffer_;
     for (auto [buffer, _] : buffer_lca)
       buffer_data_to_buffer_.Set(buffer->data, buffer);
+    bool single_warp_arrive = false;
+    if (auto target = f->GetAttr<tvm::Target>(tvm::attr::kTarget)) {
+      single_warp_arrive = target.value()->kind->name == "musa";
+    }
     f = TmaExpectTxRewriter::Rewrite(f, analyzer);
     TmaBarrierCollector collector(buffer_data_to_buffer_);
     collector(f->body);
@@ -522,7 +533,8 @@ public:
     });
     TmaBarrierRewriter rewriter(analyzer, collector.tma_op_to_barrier_id(),
                                 collector.barrier_id_to_range(),
-                                has_create_list_of_mbarrier);
+                                has_create_list_of_mbarrier,
+                                single_warp_arrive);
     f.CopyOnWrite()->body = rewriter(f->body);
     // Compute the minimum number of barriers actually referenced in the body
     // after TMA barrier rewrites (e.g., get_mbarrier(0) inserted for TMA).
@@ -544,14 +556,17 @@ public:
     max_idx_collector(f->body);
     int ensure_min_count = max_idx_collector.max_idx + 1; // 0-based -> count
 
-    ArriveThreadCountCollector arrive_thread_count_collector;
-    arrive_thread_count_collector(f->body);
+    std::unordered_map<int, int> barrier_thread_counts;
+    if (!single_warp_arrive) {
+      ArriveThreadCountCollector arrive_thread_count_collector;
+      arrive_thread_count_collector(f->body);
+      barrier_thread_counts = arrive_thread_count_collector.barrier_thread_counts();
+    }
 
-    // Default appended barriers to leader-only (=1), but prefer explicit
-    // arrive-domain counts collected from actual arrive sites.
+    // Keep user-declared mbarrier arrive_count on MUSA warp-specialized paths.
+    // For non-MUSA targets, still infer arrive-domain counts from arrive sites.
     auto barrier_creation_rewriter = BarrierCreationRewriter(
-        arrive_thread_count_collector.barrier_thread_counts(), ensure_min_count,
-        Integer(1));
+        std::move(barrier_thread_counts), ensure_min_count, Integer(1));
     f.CopyOnWrite()->body = barrier_creation_rewriter(f->body);
     return f;
   }
@@ -642,10 +657,14 @@ private:
       auto barrier_id = tma_op_to_barrier_id_[call_ref];
       auto new_args = op->args;
       new_args.Set(0, barrier_id);
-      if (!has_warp_specialization_)
+      if (single_warp_arrive_) {
+        // Preserve explicit expect_tx + arrive ordering on MUSA.
         clear_arrive_ = false;
-      else
+      } else if (!has_warp_specialization_) {
+        clear_arrive_ = false;
+      } else {
         clear_arrive_ = clear_expect_list_[cur_expect_idx_++];
+      }
       if (clear_arrive_) {
         return Call(op->dtype, builtin::ptx_arrive_barrier_expect_tx(),
                     new_args, op->annotations);
@@ -670,6 +689,7 @@ private:
   IterVar thread_var_;
   int tma_expect_tx_{0}, cur_expect_idx_{0};
   std::vector<bool> clear_expect_list_;
+  bool single_warp_arrive_{false};
 };
 
 tvm::transform::Pass InjectTmaBarrier() {

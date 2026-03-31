@@ -40,14 +40,6 @@ private:
     Block block = tvm::ffi::GetRef<Block>(op);
     Array<Buffer> alloc_buffers = op->alloc_buffers;
 
-    // Record the mapping from buffer data var to buffer for later lookup
-    for (auto buffer : alloc_buffers) {
-      buffer_map_.insert({buffer->data, buffer});
-    }
-    for (auto match_buffer : op->match_buffers) {
-      buffer_map_.insert({match_buffer->buffer->data, match_buffer->buffer});
-    }
-
     // Only check buffers allocated in THIS block, not accumulated from parent
     // blocks
     Array<Buffer> barrier_buffers;
@@ -57,12 +49,8 @@ private:
       if (!ptr_type)
         continue;
       auto storage_scope = ptr_type->storage_scope;
-      if (storage_scope == "shared.barrier" ||
-          storage_scope == "shared.cluster_barrier") {
+      if (storage_scope == "shared.barrier") {
         barrier_buffers.push_back(buffer);
-        if (storage_scope == "shared.cluster_barrier") {
-          has_cluster_barrier_ = true;
-        }
       }
     }
 
@@ -71,12 +59,6 @@ private:
     }
 
     ICHECK(thread_var_.defined()) << "thread_var_ is not defined";
-
-    for (auto buffer : barrier_buffers) {
-      ICHECK(buffer->name != "mbarrier")
-          << "Shared barrier's name 'mbarrier' is reserved";
-      buffer_data_to_buffer_.Set(buffer->data, buffer);
-    }
 
     /*
     Transform:
@@ -91,7 +73,7 @@ private:
         # This is emitted by this pass
         if tx == 0:
           for i in range(len(arrive_counts)):
-            T.ptx_init_barrier_thread_count(mbarrier_list[i], arrive_counts[i])
+            T.ptx_init_barrier_thread_count(barrier_var_i, arrive_counts[i])
     */
 
     // Extract the arrive counts from the block attr "barrier_init"
@@ -103,10 +85,11 @@ private:
                                 ->as<Map<Var, Array<PrimExpr>>>()
                                 .value();
 
-    // Create init calls for each barrier buffer
-    // Initialize each barrier element with its respective arrive count
+    Array<Var> barrier_vars;
     Array<Stmt> init_mbarrier_calls_;
     for (auto buffer : barrier_buffers) {
+      ICHECK(buffer->name != "mbarrier")
+          << "Shared barrier's name 'mbarrier' is reserved";
       auto data = buffer->data;
       ICHECK(barrier_init_map.count(data))
           << "Barrier buffer " << buffer->name
@@ -118,15 +101,36 @@ private:
           << ") must match the barrier buffer size (" << buffer->shape[0]
           << ") for buffer " << buffer->name;
 
+      // Create barrier vars and record the remapping from buffer to vars
+      Array<Var> remap_vars;
+      remap_vars.reserve(arrive_counts.size());
       for (size_t i = 0; i < arrive_counts.size(); i++) {
+        Var barrier_var(buffer->name + "_" + std::to_string(i),
+                        DataType::Int(32));
+        remap_vars.push_back(barrier_var);
+        barrier_vars.push_back(barrier_var);
         auto call =
             Call(DataType::Handle(), builtin::ptx_init_barrier_thread_count(),
-                 {BufferLoad(buffer,
-                             {IntImm(DataType::Int(32), static_cast<int>(i))}),
-                  arrive_counts[i]});
+                 {barrier_var, arrive_counts[i]});
         init_mbarrier_calls_.push_back(Evaluate(call));
       }
+      buffer_expr_remap_.Set(buffer, remap_vars);
     }
+
+    // Remove alloc_buffer("shared.barrier")
+    Array<Buffer> filtered;
+    filtered.reserve(alloc_buffers.size());
+    for (auto buf : alloc_buffers) {
+      if (!buffer_expr_remap_.count(buf)) {
+        filtered.push_back(buf);
+      }
+    }
+    if (!filtered.same_as(op->alloc_buffers)) {
+      block.CopyOnWrite()->alloc_buffers = filtered;
+    } else {
+      return StmtExprMutator::VisitStmt_(op);
+    }
+
     if (init_mbarrier_calls_.empty())
       return block;
 
@@ -143,14 +147,18 @@ private:
                                       : SeqStmt(init_mbarrier_calls_),
                                   Stmt()));
 
-    new_body.push_back(
-        Evaluate(Call(DataType::Handle(), ptx_fence_barrier_init(), {})));
-    new_body.push_back(Evaluate(
-        Call(DataType::Handle(), builtin::tvm_storage_sync(),
-             {StringImm(has_cluster_barrier_ ? "cluster" : "shared")})));
+    new_body.push_back(Evaluate(Call(DataType::Handle(), builtin::tvm_storage_sync(),
+                                     {StringImm("shared")})));
     new_body.push_back(block->body);
 
-    block.CopyOnWrite()->body = SeqStmt(new_body);
+    Stmt new_block_body = SeqStmt(new_body);
+    for (int i = static_cast<int>(barrier_vars.size()) - 1; i >= 0; --i) {
+      PrimExpr placeholder =
+          Call(DataType::Int(32), barrier_id_placeholder(), {});
+      new_block_body = LetStmt(barrier_vars[i], placeholder, new_block_body);
+    }
+
+    block.CopyOnWrite()->body = new_block_body;
 
     return StmtExprMutator::VisitStmt_(block.get());
   }
@@ -158,9 +166,19 @@ private:
   PrimExpr VisitExpr_(const BufferLoadNode *op) final {
     auto load = Downcast<BufferLoad>(StmtExprMutator::VisitExpr_(op));
     auto buffer = load->buffer;
-    if (buffer_remap_.count(buffer)) {
-      auto new_buffer = buffer_remap_[load->buffer];
-      return BufferLoad(new_buffer, load->indices);
+    if (buffer_expr_remap_.count(buffer)) {
+      auto remap_vars = buffer_expr_remap_.at(buffer);
+      ICHECK(!remap_vars.empty()) << "Barrier remap vars should not be empty";
+      ICHECK_EQ(load->indices.size(), 1)
+          << "shared.barrier buffer must be 1-D";
+
+      PrimExpr index = load->indices[0];
+      const auto *imm = index.as<IntImmNode>();
+      ICHECK(imm) << "shared.barrier index must be a constant integer";
+      ICHECK_GE(imm->value, 0);
+      ICHECK_LT(imm->value, static_cast<int64_t>(remap_vars.size()))
+          << "Barrier index out of range: " << imm->value;
+      return remap_vars[static_cast<int>(imm->value)];
     }
     return load;
   }
@@ -168,9 +186,10 @@ private:
   Stmt VisitStmt_(const BufferStoreNode *op) final {
     auto store = Downcast<BufferStore>(StmtExprMutator::VisitStmt_(op));
     auto buffer = store->buffer;
-    if (buffer_remap_.count(buffer)) {
-      auto new_buffer = buffer_remap_[store->buffer];
-      return BufferStore(new_buffer, store->value, store->indices);
+    if (buffer_expr_remap_.count(buffer)) {
+      ICHECK(false)
+          << "Storing to shared.barrier buffers is not supported after "
+             "lowering to named barrier ids.";
     }
     return store;
   }
@@ -189,14 +208,9 @@ private:
   // This is a workaround for cpu backend,
   // we need to define a thread_var for the serial loop.
   IterVar thread_var_;
-  Map<Var, Buffer> buffer_data_to_buffer_;
-  Map<Buffer, Buffer> buffer_remap_;
-  // Mapping from data Var of a Buffer to Buffer, for lookup
-  std::unordered_map<Var, Buffer, ObjectPtrHash, ObjectPtrEqual> buffer_map_;
+  Map<Buffer, Array<Var>> buffer_expr_remap_;
   // Disable shuffle elect for the warp specialized kernel
   bool disable_shuffle_elect_;
-  // Whether the block has a cluster barrier
-  bool has_cluster_barrier_ = false;
 };
 
 PrimFunc LowerSharedBarrier(PrimFunc f, bool disable_shuffle_elect) {

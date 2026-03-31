@@ -34,13 +34,13 @@ def fused_index_kernel(B: int, M: int, N: int, BLOCK_MN: int, BLOCK_K: int):
     return main
 
 
-def _require_cuda_tensor(shape, dtype):
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
+def _require_musa_tensor(shape, dtype):
+    if not torch.musa.is_available():
+        pytest.skip("MUSA not available")
     try:
-        return torch.randn(*shape, device="cuda", dtype=dtype)
+        return torch.randn(*shape, device="musa", dtype=dtype)
     except RuntimeError as err:
-        pytest.skip(f"CUDA runtime unavailable: {err}")
+        pytest.skip(f"MUSA runtime unavailable: {err}")
 
 
 def test_layout_infer_compiles_and_runs():
@@ -48,7 +48,7 @@ def test_layout_infer_compiles_and_runs():
     BLOCK_MN, BLOCK_K = 32, 64
     kernel = fused_index_kernel(B, M, N, BLOCK_MN, BLOCK_K)
 
-    a = _require_cuda_tensor((B, M, N), torch.bfloat16)
+    a = _require_musa_tensor((B, M, N), torch.bfloat16)
     a_out = torch.empty((B, M, N), dtype=torch.float32, device=a.device)
 
     # Ensure kernel compiles and executes without layout inversion failure

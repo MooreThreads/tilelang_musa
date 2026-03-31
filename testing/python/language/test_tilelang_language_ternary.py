@@ -23,7 +23,7 @@ def tilelang_ternary(M, N, block_M, block_N, dtype=T.float16):
 
 def run_tilelang_ternary(M=128, N=128, block_M=32, block_N=32, dtype=T.float16):
     kernel = tilelang_ternary(M, N, block_M, block_N, dtype)
-    a = torch.randn(M, N, device="cuda", dtype=getattr(torch, dtype))
+    a = torch.randn(M, N, device="musa", dtype=getattr(torch, dtype))
     b = kernel(a)
     ref_b = torch.zeros_like(b)
     for i in range(M):

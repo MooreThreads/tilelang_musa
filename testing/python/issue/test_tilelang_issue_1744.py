@@ -24,10 +24,10 @@ def _buggy_kernel(S: T.Tensor((8), T.bfloat16), D: T.Tensor((4, 64), T.bfloat16)
         T.copy(D_shared, D)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test():
-    test_S = torch.randn((8), dtype=torch.bfloat16, device="cuda")
-    test_D = torch.zeros((4, 64), dtype=torch.bfloat16, device="cuda")
+    test_S = torch.randn((8), dtype=torch.bfloat16, device="musa")
+    test_D = torch.zeros((4, 64), dtype=torch.bfloat16, device="musa")
     _buggy_kernel(test_S, test_D)
     ref_D = test_S[:4].view(4, 1).repeat(1, 64)
     torch.testing.assert_close(test_D, ref_D)

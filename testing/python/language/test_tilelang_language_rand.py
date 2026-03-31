@@ -51,17 +51,17 @@ def tilelang_rand_1d(M=1024, seed=42, generator="curandStatePhilox4_32_10_t"):
     return rand_kernel
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 @pytest.mark.parametrize(
     "M, seed, generator", [(1024, 42, "curandStateMRG32k3a_t"), (512, 123, "curandStatePhilox4_32_10_t"), (128, 0, "curandStateXORWOW_t")]
 )
 def test_rand_1d(M, seed, generator):
     kernel = tilelang_rand_1d(M, seed, generator)
-    A = torch.empty(M, dtype=torch.uint32, device="cuda")
-    B = torch.empty(M, dtype=torch.float32, device="cuda")
-    C = torch.empty(M, dtype=torch.float64, device="cuda")
-    D = torch.empty(M, dtype=torch.float32, device="cuda")
-    E = torch.empty(M, dtype=torch.float64, device="cuda")
+    A = torch.empty(M, dtype=torch.uint32, device="musa")
+    B = torch.empty(M, dtype=torch.float32, device="musa")
+    C = torch.empty(M, dtype=torch.float64, device="musa")
+    D = torch.empty(M, dtype=torch.float32, device="musa")
+    E = torch.empty(M, dtype=torch.float64, device="musa")
     kernel(A, B, C, D, E)
 
 

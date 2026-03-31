@@ -134,8 +134,8 @@ def run_gemm_jit_kernel(
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
 
-    A = torch.randn(M, K, dtype=in_dtype).cuda()
-    B = torch.randn(K, N, dtype=in_dtype).cuda()
+    A = torch.randn(M, K, dtype=in_dtype).musa()
+    B = torch.randn(K, N, dtype=in_dtype).musa()
 
     if trans_A:
         A = A.T
@@ -232,19 +232,19 @@ def run_tvm_ffi_kernel_multi_stream(
     matmul_kernel = tilelang.compile(program, execution_backend="tvm_ffi")
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
-    tensor_a = torch.randn(M, K, dtype=in_dtype).cuda()
-    tensor_b = torch.randn(K, N, dtype=in_dtype).cuda()
+    tensor_a = torch.randn(M, K, dtype=in_dtype).musa()
+    tensor_b = torch.randn(K, N, dtype=in_dtype).musa()
 
     if trans_A:
         tensor_a = tensor_a.T
     if trans_B:
         tensor_b = tensor_b.T
-    tensor_c = torch.randn(M, N, dtype=out_dtype).cuda()
+    tensor_c = torch.randn(M, N, dtype=out_dtype).musa()
 
     num_streams = 4
     for _ in range(num_streams):
-        stream = torch.cuda.Stream()
-        with torch.cuda.stream(stream):
+        stream = torch.musa.Stream()
+        with torch.musa.stream(stream):
             matmul_kernel(tensor_a, tensor_b, tensor_c)
 
 
@@ -282,14 +282,14 @@ def run_tvm_ffi_dynamic_shape(
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
 
-    tensor_a = torch.randn(M, K, dtype=in_dtype).cuda()
-    tensor_b = torch.randn(K, N, dtype=in_dtype).cuda()
+    tensor_a = torch.randn(M, K, dtype=in_dtype).musa()
+    tensor_b = torch.randn(K, N, dtype=in_dtype).musa()
 
     if trans_A:
         tensor_a = tensor_a.T
     if trans_B:
         tensor_b = tensor_b.T
-    tensor_c = torch.randn(M, N, dtype=out_dtype).cuda()
+    tensor_c = torch.randn(M, N, dtype=out_dtype).musa()
 
     matmul_kernel(tensor_a, tensor_b, tensor_c)
 
@@ -308,9 +308,9 @@ def test_tvm_ffi_dynamic_shape():
 
 
 def check_hopper():
-    if not torch.cuda.is_available():
+    if not torch.musa.is_available():
         return False
-    props = torch.cuda.get_device_properties(0)
+    props = torch.musa.get_device_properties(0)
     compute_capability = props.major, props.minor
     return compute_capability == (9, 0)
 
@@ -353,8 +353,8 @@ def run_tvm_ffi_im2col_tma_desc(N, C, H, W, F, K, S, D, P, block_M, block_N, blo
 
     conv_kernel = tilelang.compile(program, out_idx=-1, execution_backend="tvm_ffi")
 
-    a = torch.randn(N, H, W, C).cuda().half()
-    b = torch.randn(K, K, C, F).cuda().half()
+    a = torch.randn(N, H, W, C).musa().half()
+    b = torch.randn(K, K, C, F).musa().half()
 
     out_c = conv_kernel(a, b)
 

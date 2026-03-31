@@ -222,5 +222,6 @@ def gemm(
     Returns:
         tir.Call: A handle to the GEMM operation.
     """
-    impl = gemm_v1 if _env.use_gemm_v1() else gemm_v2
+    # impl = gemm_v1 if _env.use_gemm_v1() else gemm_v2
+    impl = gemm_v1
     return impl(A, B, C, transpose_A, transpose_B, policy, clear_accum, k_pack, wg_wait, mbar)

@@ -65,7 +65,7 @@ def run_ieee_math_test(mathop_name, mathop_func, rounding_mode="rn", M=128, N=12
     kernel = tilelang.compile(
         main_func,
         out_idx=out_idx,
-        target="cuda",
+        target="musa",
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
@@ -76,12 +76,12 @@ def run_ieee_math_test(mathop_name, mathop_func, rounding_mode="rn", M=128, N=12
 
     # Test numerical execution
     torch_dtype = dtype.as_torch()
-    a = torch.randn(M, N, device="cuda", dtype=torch_dtype)
+    a = torch.randn(M, N, device="musa", dtype=torch_dtype)
 
     if num_inputs >= 2:
-        b = torch.randn(M, N, device="cuda", dtype=torch_dtype)
+        b = torch.randn(M, N, device="musa", dtype=torch_dtype)
     if num_inputs == 3:
-        c = torch.randn(M, N, device="cuda", dtype=torch_dtype)
+        c = torch.randn(M, N, device="musa", dtype=torch_dtype)
 
     # Ensure positive values for functions that need them
     if mathop_name in ["ieee_frcp", "ieee_fsqrt"]:
@@ -120,7 +120,7 @@ def test_rounding_mode_validation():
     print("✓ Rounding mode validation test passed")
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ieee_add_all_rounding_modes():
     """Test IEEE addition with all rounding modes"""
     rounding_modes = ["rn", "rz", "ru", "rd"]
@@ -130,7 +130,7 @@ def test_ieee_add_all_rounding_modes():
         print(f"✓ ieee_add with {mode} passed")
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ieee_sub_all_rounding_modes():
     """Test IEEE subtraction with all rounding modes"""
     rounding_modes = ["rn", "rz", "ru", "rd"]
@@ -140,7 +140,7 @@ def test_ieee_sub_all_rounding_modes():
         print(f"✓ ieee_sub with {mode} passed")
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ieee_mul_all_rounding_modes():
     """Test IEEE multiplication with all rounding modes"""
     rounding_modes = ["rn", "rz", "ru", "rd"]
@@ -150,7 +150,7 @@ def test_ieee_mul_all_rounding_modes():
         print(f"✓ ieee_mul with {mode} passed")
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ieee_fmaf_all_rounding_modes():
     """Test IEEE fused multiply-add with all rounding modes"""
     rounding_modes = ["rn", "rz", "ru", "rd"]
@@ -160,7 +160,7 @@ def test_ieee_fmaf_all_rounding_modes():
         print(f"✓ ieee_fmaf with {mode} passed")
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ieee_frcp_all_rounding_modes():
     """Test IEEE reciprocal with all rounding modes"""
     rounding_modes = ["rn", "rz", "ru", "rd"]
@@ -170,7 +170,7 @@ def test_ieee_frcp_all_rounding_modes():
         print(f"✓ ieee_frcp with {mode} passed")
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ieee_fsqrt_all_rounding_modes():
     """Test IEEE square root with all rounding modes"""
     rounding_modes = ["rn", "rz", "ru", "rd"]
@@ -180,7 +180,7 @@ def test_ieee_fsqrt_all_rounding_modes():
         print(f"✓ ieee_fsqrt with {mode} passed")
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ieee_frsqrt_rn_only():
     """Test IEEE reciprocal square root (round to nearest only)"""
 
@@ -196,7 +196,7 @@ def test_ieee_frsqrt_rn_only():
     kernel = tilelang.compile(
         main,
         out_idx=[1],
-        target="cuda",
+        target="musa",
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
@@ -206,7 +206,7 @@ def test_ieee_frsqrt_rn_only():
     print("✓ ieee_frsqrt compilation test passed")
 
     # Test numerical execution
-    a = torch.abs(torch.randn(128, 128, device="cuda", dtype=torch.float32)) + 0.1
+    a = torch.abs(torch.randn(128, 128, device="musa", dtype=torch.float32)) + 0.1
 
     try:
         result = kernel(a)
@@ -216,7 +216,7 @@ def test_ieee_frsqrt_rn_only():
         print(f"Warning: ieee_frsqrt execution failed: {e}")
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ieee_fdiv_all_rounding_modes():
     """Test IEEE division with all rounding modes"""
     rounding_modes = ["rn", "rz", "ru", "rd"]

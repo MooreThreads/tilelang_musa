@@ -4,7 +4,7 @@ import tilelang.language as T
 import torch
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_issue_1549_strange_var_vectorization():
     @tl.jit
     def get_wrong_kernel(M: int = 4096):
@@ -27,7 +27,7 @@ def test_issue_1549_strange_var_vectorization():
     kernel = get_wrong_kernel()
     M = 2048
     kernel = get_wrong_kernel(M)
-    data = torch.randint(0, 100, (M,), dtype=torch.int32, device="cuda")
+    data = torch.randint(0, 100, (M,), dtype=torch.int32, device="musa")
     kernel(data)
     code = kernel.get_kernel_source()
     print(code)

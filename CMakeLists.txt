@@ -71,11 +71,12 @@ else()
 endif()
 
 # Configs
-set(TILELANG_BACKENDS CUDA ROCM METAL)
+set(TILELANG_BACKENDS CUDA ROCM METAL MUSA)
 
 set(TILELANG_BACKEND_DOC_CUDA "Enable CUDA backend (ON/OFF/or CUDA SDK path)")
 set(TILELANG_BACKEND_DOC_ROCM "Enable ROCm backend (ON/OFF/or ROCm SDK path)")
 set(TILELANG_BACKEND_DOC_METAL "Enable Metal backend")
+set(TILELANG_BACKEND_DOC_MUSA "Enable MUSA backend (ON/OFF/or MUSA SDK path)")
 
 # TVM's config.cmake redefines USE_* options later, so we cache the user's choice
 # (including explicit -DUSE_XXX arguments) before we include TVM and restore it
@@ -193,6 +194,8 @@ if(NOT TILELANG_BACKEND_USER_SELECTED)
     set(USE_METAL ON)
   elseif($ENV{USE_ROCM})
     set(USE_ROCM ON)
+  elseif($ENV{USE_MUSA})
+    set(USE_MUSA ON)
   else()
     if($ENV{USE_CUDA})
       set(USE_CUDA ON)
@@ -231,6 +234,30 @@ elseif(USE_ROCM)
   )
   list(APPEND TILE_LANG_SRCS ${TILE_LANG_HIP_SRCS})
   list(APPEND TILE_LANG_INCLUDES ${ROCM_INCLUDE_DIRS})
+elseif(USE_MUSA)
+  if(DEFINED ENV{MUSA_HOME})
+    set(MUSA_HOME $ENV{MUSA_HOME})
+  else()
+    set(MUSA_HOME "/usr/local/musa")
+  endif()
+  list(APPEND CMAKE_MODULE_PATH ${MUSA_HOME}/cmake)
+  find_package(MUSAToolkit REQUIRED)
+  if(NOT MUSAToolkit_FOUND)
+    message(FATAL_ERROR "Cannot find MUSA, USE_MUSA=" ${USE_MUSA})
+  endif()
+  message(STATUS "Build with MUSA ${MUSAToolkit_VERSION} support")
+
+  add_compile_definitions("MUSA_MAJOR_VERSION=${MUSAToolkit_VERSION_MAJOR}")
+
+  file(GLOB TILE_LANG_MUSA_SRCS
+    src/runtime/runtime.cc
+    src/target/codegen_musa.cc
+    src/target/ptx.cc
+    src/target/rt_mod_musa.cc
+  )
+
+  list(APPEND TILE_LANG_SRCS ${TILE_LANG_MUSA_SRCS})
+  list(APPEND TILE_LANG_INCLUDES ${MUSAToolkit_INCLUDE_DIRS})
 elseif(USE_CUDA)
   set(CMAKE_CUDA_STANDARD 17)
   find_package(CUDAToolkit REQUIRED)

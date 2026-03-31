@@ -57,6 +57,16 @@ class PassConfigKey(str, Enum):
         if enabled, --use_fast_math will be passed to nvcc
     """
 
+    TL_DISABLE_FAST_MATH = "tl.disable_fast_math"
+    """Compatibility alias for legacy tests/configs. Default: False.
+
+    When set to True, it takes precedence over `TL_ENABLE_FAST_MATH` and forces
+    fast math off.
+    """
+
+    TL_DISABLE_AUTO_UNROLL = "tl.disable_auto_unroll"
+    """Disable auto-unrolling of vectorize-split outer loops. Default: False"""
+
     TL_PTXAS_REGISTER_USAGE_LEVEL = "tl.ptxas_register_usage_level"
     """The PTXAS register usage level in [0, 10], which controls the
     aggressiveness of optimizations that affect register usage. Default: None"""
@@ -135,11 +145,20 @@ class PassConfigKey(str, Enum):
     TL_DISABLE_WGMMA = "tl.disable_wgmma"
     """Disable usage of Hopper WGMMA. Default: False"""
 
+    TL_DISABLE_SQMMA = "tl.disable_sqmma"
+    """Disable usage of PH1 SQMMA. Default: False"""
+
     TL_DEBUG_MERGE_SHARED_MEMORY_ALLOCATIONS = "tl.debug_merge_shared_memory_allocations"
     """Enable debug information for merge shared memory allocations. Default: False"""
 
     TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE = "tl.enable_aggressive_shared_memory_merge"
     """Enable aggressive merge of shared memory allocations. Default: False"""
+
+    TL_ENABLE_MUSA_BURST = "tl.enable_musa_burst"
+    """Enable MUSA burst SIMD vectorization when True. Default: False"""
+
+    TL_ENABLE_REDUCE_BURST = "tl.enable_reduce_burst"
+    """Enable MUSA reduce SIMD optimizations when True. Default: False"""
 
     TL_DISABLE_SHUFFLE_ELECT = "tl.disable_shuffle_elect"
     """Disable shuffle election optimization. Default: False"""

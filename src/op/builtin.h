@@ -27,6 +27,8 @@ static constexpr const char *kWarpSpecializationScope =
     "kWarpSpecializationScope";
 static constexpr const char *kCustomWarpSpecialization =
     "kCustomWarpSpecialization";
+static constexpr const char *kWarpSpecializationProducerThreads =
+    "tl.warp_specialization_producer_threads";
 // Loop annotation key controlling whether PTX async-copy rewriting is enabled
 // in the annotated loop subtree. Value should be Bool (False/True).
 static constexpr const char *kLoopPreferAsync = "parallel_prefer_async";
@@ -35,6 +37,10 @@ static constexpr const char *kLoopPreferAsync = "parallel_prefer_async";
 static constexpr const char *kParallelAsyncWithoutAsyncCommitWait =
     "parallel_async_without_async_commit_wait";
 static constexpr const char *kLocalVarInit = "tl.local_var_init";
+static constexpr const char *kForceAsyncCopy = "tl.force_async_copy";
+static constexpr const char *kSourceRobustDesc = "tl.source_robust_desc";
+static constexpr const char *kMusaReduceBarrierInit =
+    "tl.musa_reduce_barrier_init";
 // A PrimFunc-level attribute carrying a list of handle Vars
 // that must NOT be marked with the restrict qualifier in codegen.
 // Type: Array<tir::Var>
@@ -52,6 +58,7 @@ static constexpr const char *kConfigIndexBitwidth = "tl.config_index_bitwidth";
 static constexpr const char *kEnableAggressiveSharedMemoryMerge =
     "tl.enable_aggressive_shared_memory_merge";
 static constexpr const char *kDisableFastMath = "tl.disable_fast_math";
+static constexpr const char *kDisableAutoUnroll = "tl.disable_auto_unroll";
 static constexpr const char *kEnableFastMath = "tl.enable_fast_math";
 static constexpr const char *kPtxasRegisterUsageLevel =
     "tl.ptxas_register_usage_level";
@@ -62,7 +69,10 @@ static constexpr const char *kEnableAsyncCopy = "tl.enable_async_copy";
 static constexpr const char *kEnableVectorizePlannerVerbose =
     "tl.enable_vectorize_planner_verbose";
 static constexpr const char *kDisableWGMMA = "tl.disable_wgmma";
+static constexpr const char *kDisableSQMMA = "tl.disable_sqmma";
 static constexpr const char *kDisableShuffleElect = "tl.disable_shuffle_elect";
+static constexpr const char *kEnableMusaBurst = "tl.enable_musa_burst";
+static constexpr const char *kEnableReduceBurst = "tl.enable_reduce_burst";
 static constexpr const char *kDisableLoopUnswitching =
     "tl.disable_loop_unswitching";
 // Allow loop unswitching even when the else-version of the loop body is
@@ -143,6 +153,7 @@ static constexpr const char *kDisableOutOfBoundWarning =
  */
 static constexpr const char *kEnableDumpIR = "tl.enable_dump_ir";
 static constexpr const char *kDumpIRDir = "tl.dump_ir_path";
+static constexpr const char *kGemmInst = "tl.gemm_inst";
 
 /*!
  * \brief Get the type of the CUDA tensor map
@@ -229,6 +240,7 @@ TVM_DLL const Op &rng_rand_float();
  *
  */
 TVM_DLL const Op &create_tma_descriptor();
+TVM_DLL const Op &make_robust_desc();
 
 /*!
  * \brief tvm intrinsics for TMADescriptor creation for image to column load
@@ -248,6 +260,7 @@ TVM_DLL const Op &create_tma_im2col_descriptor();
  *
  */
 TVM_DLL const Op &create_list_of_mbarrier();
+TVM_DLL const Op &layout_marker();
 
 /*!
  * \brief Get the mbarrier injected by compiler via barrier_id
@@ -256,6 +269,13 @@ TVM_DLL const Op &create_list_of_mbarrier();
  *
  */
 TVM_DLL const Op &get_mbarrier();
+
+/*!
+ * \brief Synchronize using MUSA mbarrier arrive+wait.
+ *
+ * musa_sync(barrier, thread_count)
+ */
+TVM_DLL const Op &musa_sync();
 
 /*!
  * \brief tvm intrinsics for loading data from global tensor descriptor to
@@ -284,6 +304,12 @@ TVM_DLL const Op &tma_load_im2col();
  *
  */
 TVM_DLL const Op &tma_store();
+TVM_DLL const Op &musa_cp_async_robust();
+
+/*!
+ * \brief Placeholder for barrier id before numbering.
+ */
+TVM_DLL const Op &barrier_id_placeholder();
 
 /*!
  * \brief tvm intrinsics for barrier initialization fence

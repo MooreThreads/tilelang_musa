@@ -7,11 +7,16 @@ from .swizzle import (
     make_swizzled_layout,  # noqa: F401
     make_volta_swizzled_layout,  # noqa: F401
     make_wgmma_swizzled_layout,  # noqa: F401
+    make_sqmma_swizzled_layout,  # noqa: F401
+    make_no_swizzled_layout,  # noqa: F401
     make_tcgen05mma_swizzled_layout,  # noqa: F401
     make_full_bank_swizzled_layout,  # noqa: F401
     make_half_bank_swizzled_layout,  # noqa: F401
     make_quarter_bank_swizzled_layout,  # noqa: F401
     make_linear_layout,  # noqa: F401
+    make_gemm_layout_linear,  # noqa: F401
+    make_gemm_fragment_c_linear,  # noqa: F401
+    make_ph_sqmma_fragment_c,  # noqa: F401
     make_gemm_fragment_8x8,  # noqa: F401
     make_gemm_fragment_8x8_transposed,  # noqa: F401
     make_fully_replicated_layout_fragment,  # noqa: F401

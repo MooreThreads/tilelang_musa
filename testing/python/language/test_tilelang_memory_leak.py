@@ -28,9 +28,9 @@ def test_tilelang_globals_leak():
     a_weak = weakref.ref(a)
     _kernel = get_dummy_kernel()
     del a
-    torch.cuda.empty_cache()
+    torch.musa.empty_cache()
     gc.collect()
-    torch.cuda.empty_cache()
+    torch.musa.empty_cache()
     a_upgrade = a_weak()
     assert a_upgrade is None, "A is not garbage collected"
 

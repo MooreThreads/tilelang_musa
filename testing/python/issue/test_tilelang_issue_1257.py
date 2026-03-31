@@ -4,7 +4,7 @@ import tilelang.testing
 from tilelang import language as T
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_issue_1257_missing_syncthreads_after_atomic_add_on_shared():
     """Regression for issue #1257.
 
@@ -33,8 +33,10 @@ def test_issue_1257_missing_syncthreads_after_atomic_add_on_shared():
     kernel = get_kernel(m)
     source = kernel.get_kernel_source()
 
-    sync_threads = source.count("__syncthreads()")
-    assert sync_threads == 2, "Missing __syncthreads() between AtomicAdd on shared memory and subsequent shared memory read"
+    sync_threads = source.count("__syncthreads_lm()")
+    assert sync_threads == 2, (
+        "Missing __syncthreads_lm() between AtomicAdd on shared memory and subsequent shared memory read"
+    )
 
 
 if __name__ == "__main__":

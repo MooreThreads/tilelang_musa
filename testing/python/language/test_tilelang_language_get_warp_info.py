@@ -152,52 +152,52 @@ def run_shuffle_elect(num_threads: int = 128, thread_extent: int = 64):
     return A
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_get_lane_idx_default():
     run_get_lane_id()
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_get_lane_idx_custom():
     run_get_lane_id(num_threads=256, warp_size=64)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_get_warp_idx_sync_default():
     run_get_warp_idx_sync()
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_get_warp_idx_sync_custom():
     run_get_warp_idx_sync(num_threads=256, warp_size=16)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_get_warp_idx_default():
     run_get_warp_idx()
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_get_warp_idx_custom():
     run_get_warp_idx(num_threads=320, warp_size=20)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_get_warp_group_idx_default():
     run_get_warp_group_idx()
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_get_warp_group_idx_custom():
     run_get_warp_group_idx(num_threads=512, warp_size=32, warps_per_group=5)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_shuffle_elect_default():
     run_shuffle_elect(num_threads=256, thread_extent=64)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_shuffle_elect_block_leader():
     run_shuffle_elect(num_threads=128, thread_extent=0)
 

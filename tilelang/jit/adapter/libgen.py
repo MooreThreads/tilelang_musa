@@ -11,13 +11,26 @@ from tvm.target import Target
 from tilelang import tvm as tvm
 from tilelang.transform import PassConfigKey
 from tilelang.contrib.nvcc import get_nvcc_compiler, get_target_arch, get_target_compute_version
+from tilelang.contrib.mcc import get_mcc_compiler, get_musa_arch, get_musa_compute_version
 from tilelang.contrib.rocm import find_rocm_path, get_rocm_arch
-from tilelang.env import TILELANG_TEMPLATE_PATH
+from tilelang.env import TILELANG_TEMPLATE_PATH, env
 
-from .utils import is_cpu_target, is_cuda_target, is_hip_target
+from .utils import is_cpu_target, is_cuda_target, is_hip_target, is_musa_target
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_mcc_extra_args() -> list[str]:
+    raw = os.environ.get("TILELANG_MCC_EXTRA_ARGS")
+    if not raw:
+        return []
+    args: list[str] = []
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        args.append(chunk)
+    return args
 
 class LibraryGenerator:
     srcpath: str | None = None
@@ -52,14 +65,15 @@ class LibraryGenerator:
     def compile_lib(self, timeout: float = None):
         target = self.target
         verbose = self.verbose
+
+        enable_fast_math = self.pass_configs.get(PassConfigKey.TL_ENABLE_FAST_MATH, False)
+
         if is_cuda_target(target):
             from tilelang.env import CUTLASS_INCLUDE_DIR
 
             src = tempfile.NamedTemporaryFile(mode="w", suffix=".cu", delete=False)  # noqa: SIM115
             target_arch = get_target_arch(get_target_compute_version(target))
             libpath = src.name.replace(".cu", ".so")
-
-            enable_fast_math = self.pass_configs.get(PassConfigKey.TL_ENABLE_FAST_MATH, False)
 
             ptxas_usage_level = self.pass_configs.get(PassConfigKey.TL_PTXAS_REGISTER_USAGE_LEVEL, None)
             verbose_ptxas_output = self.pass_configs.get(PassConfigKey.TL_ENABLE_PTXAS_VERBOSE_OUTPUT, False)
@@ -87,6 +101,35 @@ class LibraryGenerator:
                 command += ["--ptxas-options=--verbose"]
             command += [
                 "-I" + CUTLASS_INCLUDE_DIR,
+            ]
+
+        elif is_musa_target(target):
+            from tilelang.env import MUTLASS_INCLUDE_DIR
+            src = tempfile.NamedTemporaryFile(mode="w", suffix=".mu", delete=False)  # noqa: SIM115
+            target_arch = get_musa_arch(get_musa_compute_version(target))
+            musa_arch_macro = target_arch + "0"
+            libpath = src.name.replace(".mu", ".so")
+            opt_level = os.environ.get("TILELANG_OPT_LEVEL")
+            command = [
+                get_mcc_compiler(),
+                src.name,
+                "-std=c++17",
+                "--shared",
+                "-fPIC",
+                f"--offload-arch=mp_{target_arch}",
+                f"-D__MUSA_ARCH_LIST__={musa_arch_macro}",
+            ]
+            if opt_level:
+                command += ["-Od3"]
+            if enable_fast_math:
+                command += ["-ffast-math"]
+            command += [
+                "-mllvm",
+                "-mtgpu-alloc-shared-memory-from-zero=1",
+            ]
+            command += _parse_mcc_extra_args()
+            command += [
+                "-I" + MUTLASS_INCLUDE_DIR,
             ]
 
         elif is_hip_target(target):
@@ -125,11 +168,25 @@ class LibraryGenerator:
         ]
 
         if self.compile_flags:
-            command += [item for flag in self.compile_flags for item in flag.split() if item not in command]
+            command += [item for flag in self.compile_flags for item in flag.split()]
 
         command += ["-o", libpath]
 
-        src.write(self.lib_code)
+        # Check if custom source file is specified via environment variable
+        lib_code_to_write = self.lib_code
+        custom_source = env.TILELANG_REPLACE_MUSAC
+        if custom_source and os.path.isfile(custom_source):
+            try:
+                with open(custom_source, encoding='utf-8') as f:
+                    lib_code_to_write = f.read()
+                if verbose:
+                    logger.info(f"Replacing Musa C with: {custom_source}")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to read replaced file {custom_source}: {e}, using generated code")
+                raise
+
+        src.write(lib_code_to_write)
         src.flush()
 
         try:

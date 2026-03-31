@@ -175,6 +175,7 @@ class TVMFFIKernelAdapter(BaseKernelAdapter):
 
         dynamic_symbolic_map = self._process_dynamic_symbolic()
         executable = self.executable
+        set_device_packed = tvm.get_global_func("__tvm_set_device", allow_missing=True)
 
         # Prepare helpers for friendly dtype error messages
         prim_func = self.prim_func
@@ -239,7 +240,18 @@ class TVMFFIKernelAdapter(BaseKernelAdapter):
                 else:
                     tensor = inputs[ins_idx]
                     ins_idx += 1
+                    if out_device is None and isinstance(tensor, torch.Tensor):
+                        out_device = tensor.device
                 tensor_list.append(tensor)
+
+            if not any(isinstance(t, torch.Tensor) for t in tensor_list) and set_device_packed is not None:
+                out_device = current_device_functor()
+                if isinstance(out_device, torch.device) and out_device.type == "cuda":
+                    dev_id = out_device.index if out_device.index is not None else torch.cuda.current_device()
+                    set_device_packed(tvm.cuda(dev_id).dlpack_device_type(), dev_id)
+                elif isinstance(out_device, torch.device) and out_device.type == "musa":
+                    dev_id = out_device.index if out_device.index is not None else torch.musa.current_device()
+                    set_device_packed(tvm.musa(dev_id).dlpack_device_type(), dev_id)
 
             executable(*tensor_list)
 

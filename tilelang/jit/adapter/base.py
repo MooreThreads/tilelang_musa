@@ -80,6 +80,15 @@ class BaseKernelAdapter(ABC):
                 return lambda: torch.device("cuda", current_device())
             except Exception:
                 return lambda: torch.device("cuda", torch.cuda.current_device())
+        if hasattr(torch, "musa") and torch.musa.is_available():
+            try:
+                torch.musa._lazy_init()
+                current_device = getattr(torch._C, "_musa_getDevice", None)
+                if current_device is not None:
+                    return lambda: torch.device("musa", current_device())
+                return lambda: torch.device("musa", torch.musa.current_device())
+            except Exception:
+                return lambda: torch.device("musa", torch.musa.current_device())
         # CPU fallback
         return lambda: torch.device("cpu")
 

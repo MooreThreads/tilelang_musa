@@ -36,11 +36,13 @@ def matmul(M, N, K, block_M, block_N, block_K, mbars, dtype=T.float16, accum_dty
 def test_lower_shared_barrier():
     mbars = (1, 1, 128, 128)  # list is unhashable so we use tuple here
     kernel = matmul(1024, 1024, 1024, 128, 128, 32, mbars=mbars)
+    source = kernel.get_kernel_source()
 
-    assert f"uint64_t barriers_mem[{len(mbars)}];" in kernel.get_kernel_source()
-    assert "if (tl::tl_shuffle_elect<0>()) {" in kernel.get_kernel_source()
-    for i in range(len(mbars)):
-        assert f"barriers[{i}].init({mbars[i]});" in kernel.get_kernel_source()
+    # MUSA path lowers shared barriers to named barrier bookkeeping.
+    assert f"__musa_async_bar_record({len(mbars)});" in source
+    assert "if (tl::tl_shuffle_elect<0>()) {" in source
+    for i, thread_count in enumerate(mbars, start=1):
+        assert f"__musa_async_init_arrival({i}, (({thread_count} + 31) / 32), 0);" in source
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import tilelang.testing
 
 
 def _get_sig_line(code: str) -> str:
-    # Find the kernel signature line in generated CUDA code
+    # Find the kernel signature line in generated MUSA code
     for line in code.splitlines():
         line = line.strip()
         if line.startswith('extern "C" __global__ void'):
@@ -12,8 +12,8 @@ def _get_sig_line(code: str) -> str:
     raise AssertionError("Kernel signature not found in generated code")
 
 
-@tilelang.testing.requires_cuda
-def test_cuda_restrict_default_has_restrict():
+@tilelang.testing.requires_musa
+def test_musa_restrict_default_has_restrict():
     N = 128
 
     @T.prim_func
@@ -21,14 +21,14 @@ def test_cuda_restrict_default_has_restrict():
         with T.Kernel(N, threads=32) as pid:
             y[pid] = x[pid] + 1.0
 
-    artifact = tilelang.lower(kernel, target="cuda")
+    artifact = tilelang.lower(kernel, target="musa")
     sig = _get_sig_line(artifact.kernel_source)
     # By default, kNoAlias is set and both pointers are restrict-qualified
     assert "__restrict__" in sig
 
 
-@tilelang.testing.requires_cuda
-def test_cuda_restrict_annotation_removes_restrict():
+@tilelang.testing.requires_musa
+def test_musa_restrict_annotation_removes_restrict():
     N = 128
 
     @T.prim_func
@@ -38,7 +38,7 @@ def test_cuda_restrict_annotation_removes_restrict():
             T.annotate_restrict_buffers(x, y)
             y[pid] = x[pid] + 1.0
 
-    art1 = tilelang.lower(kernel_body_annot, target="cuda")
+    art1 = tilelang.lower(kernel_body_annot, target="musa")
     sig1 = _get_sig_line(art1.kernel_source)
     # No parameter should be emitted with __restrict__
     assert "__restrict__" not in sig1

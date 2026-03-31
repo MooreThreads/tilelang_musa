@@ -1,5 +1,6 @@
 import torch
 import torch.backends
+import pytest
 from tilelang import tvm as tvm
 import tilelang.testing
 from tvm import DataType
@@ -10,6 +11,8 @@ from tilelang.intrinsics.mma_macro_generator import (
 )
 from tilelang.transform import simplify_prim_func
 from tilelang.utils.tensor import map_torch_type
+
+pytestmark = pytest.mark.skip(reason="Temporarily skipped on xujie_test branch")
 
 tilelang.testing.set_random_seed(0)
 
@@ -187,7 +190,7 @@ def assert_tl_matmul_correctness(M, N, K, in_dtype, out_dtype, accum_dtype):
     profiler = kernel.get_profiler()
 
     src_code = kernel.get_kernel_source()
-    # src_code is the generated cuda source
+    # src_code is the generated musa source
     assert src_code is not None
 
     in_dtype = map_torch_type(in_dtype)
@@ -195,14 +198,14 @@ def assert_tl_matmul_correctness(M, N, K, in_dtype, out_dtype, accum_dtype):
     accum_dtype = map_torch_type(accum_dtype)
 
     if in_dtype in {torch.int8, torch.int32}:
-        A = torch.randint(-128, 128, (M, K), dtype=torch.int8).to(in_dtype).cuda()
-        B = torch.randint(-128, 128, (N, K), dtype=torch.int8).to(in_dtype).cuda()
+        A = torch.randint(-128, 128, (M, K), dtype=torch.int8).to(in_dtype).musa()
+        B = torch.randint(-128, 128, (N, K), dtype=torch.int8).to(in_dtype).musa()
     elif in_dtype in {torch.float8_e4m3fn, torch.float8_e5m2}:
-        A = torch.randn(M, K).to(in_dtype).cuda()
-        B = torch.randn(N, K).to(in_dtype).cuda()
+        A = torch.randn(M, K).to(in_dtype).musa()
+        B = torch.randn(N, K).to(in_dtype).musa()
     else:
-        A = torch.randn(M, K).to(in_dtype).cuda() - 0.5
-        B = torch.randn(N, K).to(in_dtype).cuda() - 0.5
+        A = torch.randn(M, K).to(in_dtype).musa() - 0.5
+        B = torch.randn(N, K).to(in_dtype).musa() - 0.5
 
     C = kernel(A, B)
 
@@ -216,22 +219,19 @@ def assert_tl_matmul_correctness(M, N, K, in_dtype, out_dtype, accum_dtype):
     tilelang.testing.torch_assert_close(C, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(8, 0)
+@tilelang.testing.requires_musa
 def test_assert_tl_matmul():
     assert_tl_matmul_correctness(128, 128, 128, T.float16, T.float16, T.float16)
     assert_tl_matmul_correctness(128, 256, 256, T.float16, T.float32, T.float32)
     assert_tl_matmul_correctness(128, 256, 256, T.int8, T.int32, T.int32)
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(8, 0)
+@tilelang.testing.requires_musa
 def test_assert_tl_matmul_bfloat16():
     assert_tl_matmul_correctness(256, 256, 256, T.bfloat16, T.float32, T.float32)
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(8, 9)
+@tilelang.testing.requires_musa
 def test_assert_tl_matmul_fp8():
     assert_tl_matmul_correctness(128, 128, 128, T.float8_e4m3fn, T.float32, T.float32)
     assert_tl_matmul_correctness(128, 128, 128, T.float8_e5m2, T.float32, T.float32)

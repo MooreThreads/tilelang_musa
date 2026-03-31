@@ -15,10 +15,14 @@
 #include <deque>
 #include <memory>
 #include <queue>
+#include <string>
 
 #include "../layout/layout.h"
 #include "../layout/utils.h"
+#include "../op/builtin.h"
 #include "../op/copy.h"
+#include "../op/gemm.h"
+#include "../op/gemm_py.h"
 #include "../op/parallel.h"
 #include "../op/region.h"
 #include "../op/utils.h"
@@ -58,10 +62,66 @@ using namespace tir;
 using arith::IRMutatorWithAnalyzer;
 using arith::IRVisitorWithAnalyzer;
 
+namespace {
+
+Optional<Layout> TryLiftLayoutToInputShape(const Layout &layout,
+                                           const Array<PrimExpr> &target_shape) {
+  const auto src_shape = layout->InputShape();
+  if (src_shape.size() > target_shape.size()) {
+    return Optional<Layout>();
+  }
+
+  const size_t prefix_rank = target_shape.size() - src_shape.size();
+  StructuralEqual structurally_equal;
+  for (size_t i = 0; i < src_shape.size(); ++i) {
+    if (!structurally_equal(src_shape[i], target_shape[prefix_rank + i])) {
+      return Optional<Layout>();
+    }
+  }
+
+  if (prefix_rank == 0) {
+    return layout;
+  }
+
+  Map<Var, PrimExpr> suffix_var_map;
+  for (size_t i = 0; i < src_shape.size(); ++i) {
+    suffix_var_map.Set(InputPlaceholder(i), InputPlaceholder(prefix_rank + i));
+  }
+
+  Array<PrimExpr> lifted_forward;
+  for (size_t i = 0; i < prefix_rank; ++i) {
+    lifted_forward.push_back(InputPlaceholder(i));
+  }
+  for (const auto &e : layout->GetForwardIndex()) {
+    lifted_forward.push_back(Substitute(e, suffix_var_map));
+  }
+  return Layout(target_shape, lifted_forward);
+}
+
+bool IsLayoutEquivalentUnderPrefixLift(const Layout &lhs, const Layout &rhs) {
+  if (lhs->IsEqual(rhs.get())) {
+    return true;
+  }
+  auto lifted_lhs = TryLiftLayoutToInputShape(lhs, rhs->InputShape());
+  if (lifted_lhs.defined() && lifted_lhs.value()->IsEqual(rhs.get())) {
+    return true;
+  }
+  auto lifted_rhs = TryLiftLayoutToInputShape(rhs, lhs->InputShape());
+  if (lifted_rhs.defined() && lhs->IsEqual(lifted_rhs.value().get())) {
+    return true;
+  }
+  return false;
+}
+
+} // namespace
+
 struct LayoutInferenceResult {
   Map<Buffer, Layout> layout_map;
   Map<For, Fragment> for_map;
   Map<For, PrimExpr> predicate_map;
+  Map<Layout, Bool> k_major_map;
+  Map<Layout, Bool> sqmma_map;
+  Map<Layout, PrimExpr> sqmma_inst_split_map;
 };
 
 class BufferUseDefCollector : public IRVisitorWithAnalyzer {
@@ -109,6 +169,8 @@ public:
         << "iter_var->dom->extent is not a constant integer, which is "
            "required for layout inference.";
 
+    AdvanceManualLayoutSteps(cur_infer_id, layout_map);
+
     // Run InferLayout
     auto updates = next->InferLayout(LayoutInferArgs{target_,
                                                      thread_bounds,
@@ -125,6 +187,22 @@ public:
       // Basic validity checks
       ICHECK(buffer.defined()) << "InferLayout returned an undefined buffer.";
       ICHECK(layout.defined()) << "InferLayout returned an undefined layout.";
+
+      if (active_manual_layouts_.count(buffer)) {
+        Layout expected = active_manual_layouts_[buffer];
+        if (!layout_map.count(buffer)) {
+          layout_map.Set(buffer, expected);
+        }
+        if (!IsLayoutEquivalentUnderPrefixLift(layout, expected)) {
+          LOG(WARNING) << "Layout conflict under allow_reannotation for buffer "
+                       << buffer
+                       << ". Keep manual layout in current reannotation "
+                          "interval."
+                       << "\n inferred: " << layout->DebugOutput()
+                       << "\n expected: " << expected->DebugOutput();
+        }
+        continue;
+      }
 
       // Helper: propagate inferred layout to alias buffers (same data Var)
       auto propagate_alias = [&](const Buffer &src_buffer,
@@ -153,7 +231,8 @@ public:
                                         Integer(src_buffer->dtype.bytes()),
                                         Integer(sib->dtype.bytes()));
           if (layout_map.count(sib)) {
-            ICHECK(target_layout->IsEqual(layout_map[sib].get()))
+            ICHECK(IsLayoutEquivalentUnderPrefixLift(target_layout,
+                                                     layout_map[sib]))
                 << "Get different layout for alias buffer " << sib
                 << " (data-shared with " << src_buffer
                 << ")\n current: " << target_layout->DebugOutput()
@@ -210,7 +289,7 @@ public:
         }
 
         // If already in map, check if they are structurally equal
-        if (!layout->IsEqual(layout_map[buffer].get())) {
+        if (!IsLayoutEquivalentUnderPrefixLift(layout, layout_map[buffer])) {
           // Try to merge swizzle layouts if both are swizzle layouts
           const Layout &existing = layout_map[buffer];
           if (!layout.as<Fragment>() && !existing.as<Fragment>()) {
@@ -279,6 +358,28 @@ public:
     }
   };
 
+  void AdvanceManualLayoutSteps(int cur_infer_id, LayoutMap &layout_map) {
+    while (next_manual_layout_step_idx_ < manual_layout_steps_.size()) {
+      const auto &[step, step_layouts] =
+          manual_layout_steps_[next_manual_layout_step_idx_];
+      int apply_at = 0;
+      if (layout_override_step_to_infer_idx_.count(step)) {
+        apply_at = layout_override_step_to_infer_idx_[step];
+      }
+      if (apply_at > cur_infer_id) {
+        break;
+      }
+      for (const auto &[buffer, layout] : step_layouts) {
+        if (!pre_manual_layout_map_.count(buffer) && layout_map.count(buffer)) {
+          pre_manual_layout_map_.Set(buffer, layout_map[buffer]);
+        }
+        active_manual_layouts_.Set(buffer, layout);
+        layout_map.Set(buffer, layout);
+      }
+      ++next_manual_layout_step_idx_;
+    }
+  }
+
   LayoutInferenceResult Run() {
     // Basic consistency check: infer_list_ and thread_var_vec_ should have the
     // same size
@@ -303,8 +404,11 @@ public:
       DLOG(INFO) << "    op " << i << ":" << infer_list_stmt_[i] << '\n';
     }
 
-    // If needed, you can also check that annotated_layout_map_ is not empty, or
-    // anything else relevant to your setup.
+    std::sort(manual_layout_steps_.begin(), manual_layout_steps_.end(),
+              [](const auto &a, const auto &b) { return a.first < b.first; });
+    next_manual_layout_step_idx_ = 0;
+    active_manual_layouts_ = LayoutMap();
+    pre_manual_layout_map_ = LayoutMap();
 
     // Copy the annotated layout map to local variable
     Map<Buffer, Layout> layout_map = annotated_layout_map_;
@@ -395,6 +499,10 @@ public:
       }
     }
 
+    for (const auto &[buffer, layout] : pre_manual_layout_map_) {
+      layout_map.Set(buffer, layout);
+    }
+
     // Check that all local.fragment buffers have inferred layouts
     for (const auto &[buffer, _] : use_list_) {
       if (IsFragmentBuffer(buffer)) {
@@ -432,7 +540,13 @@ public:
       }
     }
 
-    return {layout_map, for_map, predicate_map};
+    Map<Layout, Bool> k_major_map;
+    Map<Layout, Bool> sqmma_map;
+    Map<Layout, PrimExpr> sqmma_inst_split_map;
+    BuildLayoutHintsFromInferList(layout_map, k_major_map, sqmma_map,
+                                  sqmma_inst_split_map);
+    return {layout_map,  for_map,   predicate_map,
+            k_major_map, sqmma_map, sqmma_inst_split_map};
   }
 
   void Collect(const PrimFunc &f) {
@@ -504,6 +618,17 @@ private:
     // Do not analysis the call node to the global function.
     if (op->op.as<GlobalVarNode>())
       return;
+    if (const auto *op_node = op->op.as<OpNode>()) {
+      if (op_node->name == "tl.layout_marker") {
+        ICHECK_EQ(op->args.size(), 1U)
+            << "tl.layout_marker expects one integer step argument";
+        auto step_imm = op->args[0].as<IntImmNode>();
+        ICHECK(step_imm) << "tl.layout_marker step must be IntImm";
+        layout_override_step_to_infer_idx_[step_imm->value] =
+            static_cast<int>(infer_list_.size());
+        return;
+      }
+    }
 
     auto p = ParseOperator(tvm::ffi::GetRef<Call>(op));
     if (p.defined()) {
@@ -606,6 +731,159 @@ private:
       }
     }
     return std::nullopt;
+  }
+
+  void SetLayoutBoolHint(Map<Layout, Bool> &map, const Layout &layout,
+                         Bool value, const char *hint_name) {
+    if (map.count(layout)) {
+      ICHECK(map[layout]->value == value->value)
+          << hint_name << " mismatch for layout " << layout->DebugOutput();
+    } else {
+      map.Set(layout, value);
+    }
+  }
+
+  void SetLayoutExprHint(Map<Layout, PrimExpr> &map, const Layout &layout,
+                         const PrimExpr &value, const char *hint_name) {
+    if (map.count(layout)) {
+      ICHECK(StructuralEqual()(map[layout], value))
+          << hint_name << " mismatch for layout " << layout->DebugOutput();
+    } else {
+      map.Set(layout, value);
+    }
+  }
+
+  Optional<Layout> FindLayoutForBuffer(const LayoutMap &layout_map,
+                                       const Buffer &buffer) const {
+    if (layout_map.count(buffer)) {
+      return layout_map[buffer];
+    }
+    for (const auto &[key, layout] : layout_map) {
+      if (key->data.same_as(buffer->data) || key->name == buffer->name) {
+        return layout;
+      }
+    }
+    return Optional<Layout>();
+  }
+
+  void BuildLayoutHintsFromInferList(
+      const LayoutMap &layout_map, Map<Layout, Bool> &k_major_map,
+      Map<Layout, Bool> &sqmma_map,
+      Map<Layout, PrimExpr> &sqmma_inst_split_map) {
+    if (!TargetIsPH1(target_)) {
+      return;
+    }
+    ICHECK_EQ(infer_list_stmt_.size(), thread_bounds_vec_.size())
+        << "infer_list_stmt_ and thread_bounds_vec_ size mismatch";
+
+    LayoutMap active_layout_map = layout_map;
+    size_t next_manual_step_idx = 0;
+    auto advance_manual_steps = [&](int cur_infer_id) {
+      while (next_manual_step_idx < manual_layout_steps_.size()) {
+        const auto &[step, step_layouts] =
+            manual_layout_steps_[next_manual_step_idx];
+        int apply_at = 0;
+        if (layout_override_step_to_infer_idx_.count(step)) {
+          apply_at = layout_override_step_to_infer_idx_[step];
+        }
+        if (apply_at > cur_infer_id) {
+          break;
+        }
+        for (const auto &[buffer, layout] : step_layouts) {
+          active_layout_map.Set(buffer, layout);
+        }
+        ++next_manual_step_idx;
+      }
+    };
+
+    for (size_t i = 0; i < infer_list_stmt_.size(); ++i) {
+      advance_manual_steps(static_cast<int>(i));
+      const auto *call = infer_list_stmt_[i].as<CallNode>();
+      if (call == nullptr) {
+        continue;
+      }
+      auto infer = ParseOperator(tvm::ffi::GetRef<Call>(call));
+      if (!infer.defined()) {
+        continue;
+      }
+      if (const auto *gemm = infer.as<GemmNode>()) {
+        auto a_layout = FindLayoutForBuffer(active_layout_map, gemm->a_);
+        auto b_layout = FindLayoutForBuffer(active_layout_map, gemm->b_);
+        if (a_layout.has_value()) {
+          SetLayoutBoolHint(k_major_map, a_layout.value(), Bool(!gemm->transA_),
+                            "k_major");
+        }
+        if (b_layout.has_value()) {
+          SetLayoutBoolHint(k_major_map, b_layout.value(), Bool(gemm->transB_),
+                            "k_major");
+        }
+        auto block_size = as_const_int(thread_bounds_vec_[i]->extent);
+        if (block_size == nullptr || !gemm->AllowSQMMA(*block_size, target_)) {
+          continue;
+        }
+        if (a_layout.has_value()) {
+          SetLayoutBoolHint(sqmma_map, a_layout.value(), Bool(true), "sqmma");
+        }
+        if (b_layout.has_value()) {
+          SetLayoutBoolHint(sqmma_map, b_layout.value(), Bool(true), "sqmma");
+        }
+        auto sqmma_inst = gemm->SelectSQMMAInstShape(*block_size, target_);
+        if (sqmma_inst.has_value()) {
+          // For A transpose layout, split by instruction M dimension.
+          if (a_layout.has_value() && gemm->transA_) {
+            SetLayoutExprHint(sqmma_inst_split_map, a_layout.value(),
+                              IntImm(DataType::Int(32), (*sqmma_inst)[0]),
+                              "sqmma inst split");
+          }
+          // For B non-transpose layout, split by instruction N dimension.
+          if (b_layout.has_value() && !gemm->transB_) {
+            SetLayoutExprHint(sqmma_inst_split_map, b_layout.value(),
+                              IntImm(DataType::Int(32), (*sqmma_inst)[1]),
+                              "sqmma inst split");
+          }
+        }
+      } else if (const auto *gemm_py = infer.as<GemmPyNode>()) {
+        auto a_layout = FindLayoutForBuffer(active_layout_map, gemm_py->a_);
+        auto b_layout = FindLayoutForBuffer(active_layout_map, gemm_py->b_);
+        if (a_layout.has_value()) {
+          SetLayoutBoolHint(k_major_map, a_layout.value(),
+                            Bool(!gemm_py->transA_), "k_major");
+        }
+        if (b_layout.has_value()) {
+          SetLayoutBoolHint(k_major_map, b_layout.value(),
+                            Bool(gemm_py->transB_), "k_major");
+        }
+        auto block_size = as_const_int(thread_bounds_vec_[i]->extent);
+        if (block_size == nullptr) {
+          continue;
+        }
+        if (gemm_py->AllowSQMMA(*block_size, target_)) {
+          if (a_layout.has_value()) {
+            SetLayoutBoolHint(sqmma_map, a_layout.value(), Bool(true),
+                              "sqmma");
+          }
+          if (b_layout.has_value()) {
+            SetLayoutBoolHint(sqmma_map, b_layout.value(), Bool(true),
+                              "sqmma");
+          }
+          auto sqmma_inst = gemm_py->SelectSQMMAInstShape(*block_size, target_);
+          if (sqmma_inst.has_value()) {
+            // For A transpose layout, split by instruction M dimension.
+            if (a_layout.has_value() && gemm_py->transA_) {
+              SetLayoutExprHint(sqmma_inst_split_map, a_layout.value(),
+                                IntImm(DataType::Int(32), (*sqmma_inst)[0]),
+                                "sqmma inst split");
+            }
+            // For B non-transpose layout, split by instruction N dimension.
+            if (b_layout.has_value() && !gemm_py->transB_) {
+              SetLayoutExprHint(sqmma_inst_split_map, b_layout.value(),
+                                IntImm(DataType::Int(32), (*sqmma_inst)[1]),
+                                "sqmma inst split");
+            }
+          }
+        }
+      }
+    }
   }
 
   void addToUseList(const Buffer &buffer) {
@@ -789,6 +1067,56 @@ private:
                                 Integer(buffer->dtype.bytes()));
             annotated_layout_map_.Set(buffer, reshaped_layout);
           }
+        }
+      }
+    }
+
+    if (op->annotations.count("layout_override_seq")) {
+      auto seq_map_opt = op->annotations.Get("layout_override_seq")
+                             ->as<Map<tvm::ffi::String, Map<Var, Layout>>>();
+      if (seq_map_opt.has_value()) {
+        std::vector<std::pair<int64_t, Map<Var, Layout>>> seq_items;
+        seq_items.reserve(seq_map_opt.value().size());
+        for (const auto &[step_str, step_layouts] : seq_map_opt.value()) {
+          int64_t step = std::stoll(std::string(step_str));
+          seq_items.push_back({step, step_layouts});
+        }
+        std::sort(
+            seq_items.begin(), seq_items.end(),
+            [](const auto &a, const auto &b) { return a.first < b.first; });
+        for (const auto &[step, step_layouts] : seq_items) {
+          LayoutMap resolved_step_layouts;
+          for (const auto &[var, layout] : step_layouts) {
+            ICHECK(buffer_data_to_buffers_.count(var))
+                << "buffer " << var << " is not found in the block";
+            const auto &buffers = buffer_data_to_buffers_[var];
+            ICHECK(!buffers.empty()) << "buffer list for " << var << " is empty";
+            for (const auto &buffer : buffers) {
+              bool shapes_equal =
+                  layout->InputShape().size() == buffer->shape.size();
+              if (shapes_equal) {
+                for (size_t i = 0; i < layout->InputShape().size(); ++i) {
+                  if (!analyzer_.CanProveEqual(layout->InputShape()[i],
+                                               buffer->shape[i])) {
+                    shapes_equal = false;
+                    break;
+                  }
+                }
+              }
+
+              if (shapes_equal) {
+                resolved_step_layouts.Set(buffer, layout);
+              } else {
+                int base_bytes = buffers[0]->dtype.bytes();
+                auto reshaped_layout =
+                    layout->Reshape(buffer->shape, &analyzer_,
+                                    Integer(base_bytes),
+                                    Integer(buffer->dtype.bytes()));
+                resolved_step_layouts.Set(buffer, reshaped_layout);
+              }
+            }
+          }
+          manual_layout_steps_.push_back({step, resolved_step_layouts});
         }
       }
     }
@@ -1023,6 +1351,18 @@ private:
   std::vector<bool> buffer_oob_vec_;
   Target target_;
   LayoutMap annotated_layout_map_;
+  // stores all step -> layout_map mappings
+  std::vector<std::pair<int64_t, LayoutMap>> manual_layout_steps_;
+  // stores all step -> infer_idx mappings
+  // infer_idx is the position of layout_marker in the operator sequence
+  std::unordered_map<int64_t, int> layout_override_step_to_infer_idx_;
+  // stores the re-annotated layouts that are already active at the
+  // cur_infer_id stage and must be enforced
+  LayoutMap active_manual_layouts_;
+  // represents each buffer's layout before its first re-annotation
+  LayoutMap pre_manual_layout_map_;
+  // points to the next unapplied step in manual_layout_steps_
+  size_t next_manual_layout_step_idx_{0};
   bool skip_thread_partition_{false};
 
   std::vector<TileOperator> BackupInferList() {
@@ -1237,6 +1577,10 @@ private:
     }
     auto block_ptr = block.CopyOnWrite();
     block_ptr->annotations.Set(attr::kLayoutMap, result_.layout_map);
+    block_ptr->annotations.Set(attr::kKMajorMap, result_.k_major_map);
+    block_ptr->annotations.Set(attr::kSqmmaMap, result_.sqmma_map);
+    block_ptr->annotations.Set(attr::kSqmmaInstSplitMap,
+                               result_.sqmma_inst_split_map);
     return block;
   }
 

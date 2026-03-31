@@ -952,6 +952,12 @@ TVM_FFI_STATIC_INIT_BLOCK() {
              return makeGemmABLayoutHopper(stride, mat_continuous, continuity,
                                            element_size, k_inner);
            })
+      .def("tl.make_sqmma_swizzled_layout",
+           [](int stride, int mat_continuous, int continuity, int element_size,
+              bool k_inner) {
+             return makeGemmABLayoutPH1(stride, mat_continuous, continuity,
+                                        element_size, k_inner);
+           })
       .def("tl.make_tcgen05mma_swizzled_layout",
            [](int stride, int mat_continuous, int continuity, int element_size,
               bool k_inner) {
@@ -972,6 +978,27 @@ TVM_FFI_STATIC_INIT_BLOCK() {
            })
       .def("tl.make_linear_layout",
            [](Array<PrimExpr> shape) { return makeLinearLayout(shape); })
+      .def("tl.make_gemm_layout_linear",
+           [](int stride, int continuous) {
+             return makeGemmLayoutLinear(stride, continuous);
+           })
+      .def("tl.make_gemm_fragment_c_linear",
+           [](int block_m, int block_n, int block_size) {
+             return makeGemmFragmentCLinear(block_m, block_n, block_size);
+           })
+      .def("tl.make_ph_sqmma_fragment_c",
+           [](int block_m, int block_n, int warp_m, int warp_n,
+              int element_size, Array<Integer> inst_shape) {
+             ICHECK_EQ(inst_shape.size(), 3)
+                 << "inst_shape for make_ph_sqmma_fragment_c must have 3 "
+                    "elements [M, N, K], but got "
+                 << inst_shape.size();
+             std::array<int, 3> inst = {static_cast<int>(inst_shape[0]->value),
+                                        static_cast<int>(inst_shape[1]->value),
+                                        static_cast<int>(inst_shape[2]->value)};
+             return makePHSqmmaFragmentC(block_m, block_n, warp_m, warp_n,
+                                         element_size, inst);
+           })
       .def("tl.make_gemm_fragment_8x8", []() { return makeGemmFragment8x8(); })
       .def("tl.make_gemm_fragment_8x8_transposed",
            []() { return makeGemmFragment8x8Transposed(); })

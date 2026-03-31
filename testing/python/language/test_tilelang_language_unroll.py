@@ -19,7 +19,7 @@ def test_unroll_with_step():
 
 
 # TODO: unroll factor is not supported on hip, skip.
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_unroll_with_unroll_factor():
     @T.prim_func
     def main(A_ptr: T.handle):

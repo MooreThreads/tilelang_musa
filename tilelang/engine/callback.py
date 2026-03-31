@@ -26,6 +26,14 @@ def register_hip_postproc(func: Callable[[str, Target], str], override: bool = T
     tvm_ffi.register_global_func("tilelang_callback_hip_postproc", f=func, override=override)
 
 
+def register_musa_postproc(func: Callable[[str, Target], str], override: bool = True):
+    """Register a post-processing function for MUSA code generation.
+
+    MUSA uses a dedicated callback symbol in runtime module loading.
+    """
+    tvm_ffi.register_global_func("tilelang_callback_musa_postproc", f=func, override=override)
+
+
 def register_c_postproc(func: Callable[[str, Target], str], override: bool = True):
     """Register a post-processing function for C host code generation.
 
@@ -111,6 +119,24 @@ def register_hip_postproc_callback(func: Callable | bool = None, override: bool 
 
         def _register(fn: Callable[[str, Target], str]):
             register_hip_postproc(fn, _override)
+            return fn
+
+        return _register
+
+    raise TypeError("Invalid decorator usage")
+
+
+def register_musa_postproc_callback(func: Callable | bool = None, override: bool = True):
+    """Decorator for registering MUSA post-processing callback function."""
+    if callable(func):
+        register_musa_postproc(func, override)
+        return func
+
+    if func is None or isinstance(func, bool):
+        _override = func if isinstance(func, bool) else override
+
+        def _register(fn: Callable[[str, Target], str]):
+            register_musa_postproc(fn, _override)
             return fn
 
         return _register

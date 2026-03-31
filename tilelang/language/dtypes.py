@@ -135,6 +135,22 @@ _STR_TO_TVM_DTYPE_CALL = {
 int_ = int
 
 
+def __dtype_eq__(self: dtype, other: AnyDType):
+    if isinstance(other, str):
+        return str.__eq__(self, _CANONICAL_TO_DISPLAY_STR.get(other, other))
+    if other in _DTYPE_TO_STR:
+        return str.__eq__(self, _DTYPE_TO_STR[other])
+    return NotImplemented
+
+
+def __dtype_ne__(self: dtype, other: AnyDType):
+    if isinstance(other, str):
+        return str.__ne__(self, _CANONICAL_TO_DISPLAY_STR.get(other, other))
+    if other in _DTYPE_TO_STR:
+        return str.__ne__(self, _DTYPE_TO_STR[other])
+    return NotImplemented
+
+
 def __dtype_call__(self: dtype, expr=None, is_size_var: bool = False) -> tir.Var:
     if isinstance(expr, int_):
         return tvm.tir.const(expr, dtype=self)
@@ -231,6 +247,10 @@ def __dtype_bytes__(self: dtype) -> int:
 
 dtype.__call__ = __dtype_call__
 dtype.__new__ = __dtype_new__
+dtype.__eq__ = __dtype_eq__
+dtype.__req__ = __dtype_eq__
+dtype.__ne__ = __dtype_ne__
+dtype.__rne__ = __dtype_ne__
 dtype.as_torch = __dtype_as_torch__
 dtype.bytes = property(__dtype_bytes__)
 

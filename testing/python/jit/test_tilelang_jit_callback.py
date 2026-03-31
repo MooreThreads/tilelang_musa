@@ -1,7 +1,7 @@
 from tilelang import language as T
 import tilelang.testing
 import tilelang
-from tilelang.engine.callback import register_cuda_postproc_callback, register_hip_postproc_callback
+from tilelang.engine.callback import register_musa_postproc_callback, register_hip_postproc_callback
 import torch
 import pytest
 
@@ -85,8 +85,8 @@ def run_gemm(
 
     stramp = "&*(XS)"
 
-    @register_cuda_postproc_callback
-    def tilelang_callback_cuda_postproc(code, _):
+    @register_musa_postproc_callback
+    def tilelang_callback_musa_postproc(code, _):
         code = f"// {stramp}\n" + code
         return code
 
@@ -105,7 +105,7 @@ def run_gemm(
 
 
 @pytest.mark.skip(reason="Skipping callback test")
-def test_cuda_postproc_callback():
+def test_musa_postproc_callback():
     run_gemm(
         512,
         1024,
@@ -201,8 +201,8 @@ def run_gemm_jit_kernel(
 
     matmul_kernel = tilelang.compile(program, out_idx=-1)
 
-    A = torch.randn(M, K, dtype=torch.__getattribute__(in_dtype)).cuda()
-    B = torch.randn(K, N, dtype=torch.__getattribute__(in_dtype)).cuda()
+    A = torch.randn(M, K, dtype=torch.__getattribute__(in_dtype)).musa()
+    B = torch.randn(K, N, dtype=torch.__getattribute__(in_dtype)).musa()
 
     if trans_A:
         A = A.T

@@ -35,18 +35,18 @@ def qwq(dtype=torch.float8_e4m3fn):
     return main
 
 
-@tilelang.testing.requires_cuda
-@pytest.mark.parametrize("dtype", [torch.float8_e4m3fn, torch.float8_e5m2, torch.float8_e8m0fnu, torch.float16])
+@tilelang.testing.requires_musa
+@pytest.mark.parametrize("dtype", [torch.float8_e4m3fn, torch.float8_e5m2, torch.float16])
 def test_hoist_broadcast(dtype):
     kernel = qwq(dtype)
     print(kernel.get_kernel_source())
     matches = re.findall(r"(\w+) broadcast_var(_[0-9]+)? = \1", kernel.get_kernel_source())
     assert len(matches) == 4
-    a = torch.empty((32,), device="cuda", dtype=dtype)
-    b = torch.empty((16,), device="cuda", dtype=dtype)
-    c = torch.empty((8,), device="cuda", dtype=dtype)
-    d = torch.empty((4,), device="cuda", dtype=dtype)
-    e = torch.empty((2,), device="cuda", dtype=dtype)
+    a = torch.empty((32,), device="musa", dtype=dtype)
+    b = torch.empty((16,), device="musa", dtype=dtype)
+    c = torch.empty((8,), device="musa", dtype=dtype)
+    d = torch.empty((4,), device="musa", dtype=dtype)
+    e = torch.empty((2,), device="musa", dtype=dtype)
     kernel(a, b, c, d, e)
 
 

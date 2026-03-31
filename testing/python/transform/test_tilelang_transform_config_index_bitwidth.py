@@ -110,7 +110,7 @@ def blocksparse_flashattn(batch, heads, seq_len, dim, downsample_len, is_causal)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
                 O_shared = T.alloc_shared([block_M, dim], dtype)
                 acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
+                acc_s_cast = T.alloc_shared([block_M, block_N], dtype)
                 acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_M], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
@@ -158,9 +158,9 @@ def test_sta_attention():
     program = blocksparse_flashattn(BATCH, N_HEADS, SEQ_LEN, D_HEAD, downsample_len, is_causal=True)
     kernel = tilelang.compile(program, out_idx=[4], pass_configs={"tl.config_index_bitwidth": 64})
 
-    cuda_source = kernel.get_kernel_source()
+    musa_source = kernel.get_kernel_source()
 
-    assert "int64_t" in cuda_source
+    assert "int64_t" in musa_source
 
 
 if __name__ == "__main__":

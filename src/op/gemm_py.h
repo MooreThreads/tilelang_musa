@@ -73,6 +73,8 @@ public:
 
   // Target GEMM instruction
   GemmInst getGemmInst(int block_size, Target target) const;
+  bool AllowSQMMA(int block_size, Target target) const;
+  std::optional<std::array<int, 3>> SelectSQMMAInstShape(int block_size, Target target) const;
 
 private:
   mutable bool completed_ = false;

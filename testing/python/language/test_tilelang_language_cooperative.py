@@ -24,13 +24,12 @@ def grid_sync(N=1024):
     return kernel
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version_ge(6, 0)
+@tilelang.testing.requires_musa
 def test_grid_sync():
     N = 1024
     kernel = grid_sync(N)
     assert "cooperative_groups::this_grid().sync()" in kernel.get_kernel_source()
-    tensor = torch.rand((N), dtype=torch.float32, device="cuda")
+    tensor = torch.rand((N), dtype=torch.float32, device="musa")
     kernel(tensor)
     target = torch.full_like(tensor, tensor[0])
     torch.testing.assert_close(tensor, target)

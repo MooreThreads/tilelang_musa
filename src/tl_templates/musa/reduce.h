@@ -1,0 +1,302 @@
+#pragma once
+
+#include "common.h"
+#include <type_traits>
+
+namespace tl {
+
+struct SumOp {
+  template <typename T> TL_DEVICE T operator()(T const &x, T const &y) {
+    return x + y;
+  }
+};
+
+struct MaxOp {
+  template <typename T> TL_DEVICE T operator()(T const &x, T const &y) {
+    return mutlass::fast_max(x, y);
+  }
+};
+
+struct MinOp {
+  template <typename T> TL_DEVICE T operator()(T const &x, T const &y) {
+    return mutlass::fast_min(x, y);
+  }
+};
+
+struct BitAndOp {
+  template <typename T> TL_DEVICE T operator()(T const &x, T const &y) {
+    return x & y;
+  }
+};
+
+struct BitOrOp {
+  template <typename T> TL_DEVICE T operator()(T const &x, T const &y) {
+    return x | y;
+  }
+};
+
+struct BitXorOp {
+  template <typename T> TL_DEVICE T operator()(T const &x, T const &y) {
+    return x ^ y;
+  }
+};
+
+template <class Reducer, int threads, int scale, int thread_offset = 0,
+          int all_threads = threads>
+struct AllReduce {
+  static_assert(threads == 1024 or threads == 512 or threads == 256 or
+                threads == 128 or threads == 64 or threads == 32 or
+                threads == 16 or threads == 8 or threads == 4 or threads == 2);
+  static_assert(threads % scale == 0);
+
+  template <typename T> static TL_DEVICE T run(T x, T *red_buf = nullptr) {
+    constexpr int offset = threads / 2;
+    if constexpr (offset >= 32) {
+      __syncthreads();
+      red_buf[threadIdx.x - thread_offset] = x;
+      __syncthreads();
+      x = Reducer()(x, red_buf[(threadIdx.x - thread_offset) ^ offset]);
+    } else {
+      x = Reducer()(x, tl::shfl_xor_sync(uint32_t(-1), x, offset));
+    }
+    if constexpr (offset == scale) {
+      return x;
+    } else {
+      return AllReduce<Reducer, offset, scale, thread_offset, all_threads>::run(
+          x, red_buf);
+    }
+  }
+};
+
+template <class Reducer, int threads, int scale, int thread_offset = 0,
+          int all_threads = threads>
+struct AllReduceWS {
+  static_assert(threads == 1024 or threads == 512 or threads == 256 or
+                threads == 128 or threads == 64 or threads == 32 or
+                threads == 16 or threads == 8 or threads == 4 or threads == 2);
+  static_assert(threads % scale == 0);
+
+  template <typename T>
+  static TL_DEVICE T run(T x, int barrier_id, T *red_buf = nullptr) {
+    constexpr int offset = threads / 2;
+    if constexpr (offset >= 32) {
+      auto phase = __musa_async_arrive(barrier_id);
+      __musa_async_wait(barrier_id, phase);
+      red_buf[threadIdx.x - thread_offset] = x;
+      phase = __musa_async_arrive(barrier_id);
+      __musa_async_wait(barrier_id, phase);
+      x = Reducer()(x, red_buf[(threadIdx.x - thread_offset) ^ offset]);
+    } else {
+      x = Reducer()(x, tl::shfl_xor_sync(uint32_t(-1), x, offset));
+    }
+    if constexpr (offset == scale) {
+      return x;
+    } else {
+      return AllReduceWS<Reducer, offset, scale, thread_offset,
+                         all_threads>::run(x, barrier_id, red_buf);
+    }
+  }
+};
+
+template <int threads, bool reverse = false> struct CumSum1D {
+  static_assert(threads == 1024 or threads == 512 or threads == 256 or
+                threads == 128 or threads == 64 or threads == 32);
+  template <typename T, int SEG = 32>
+  static TL_DEVICE void run(const T *__restrict__ src, T *__restrict__ dst,
+                            int N) {
+    if (N <= 0)
+      return;
+
+    constexpr unsigned MASK = 0xffffffff;
+    const int tid = threadIdx.x;
+    const int lane = tid % SEG;
+
+    if (tid >= SEG)
+      return;
+
+    T carry = (T)0;
+
+    if (reverse) {
+      const int num_segments = (N + SEG - 1) / SEG;
+      for (int seg = num_segments - 1; seg >= 0; --seg) {
+        const int idx = seg * SEG + lane;
+        T val = (idx < N) ? src[idx] : (T)0;
+
+#pragma unroll
+        for (int off = 1; off < SEG; off <<= 1) {
+          T n = (T)tl::shfl_down_sync(MASK, val, off);
+          if (lane < SEG - off)
+            val += n;
+        }
+
+        val += carry;
+
+        if (idx < N)
+          dst[idx] = val;
+
+        T segSum = (T)tl::shfl_sync(MASK, val, 0);
+        if (lane == 0)
+          carry = segSum;
+        carry = (T)tl::shfl_sync(MASK, carry, 0);
+      }
+    } else {
+      const int num_segments = (N + SEG - 1) / SEG;
+      for (int seg = 0; seg < num_segments; ++seg) {
+        const int idx = seg * SEG + lane;
+        T val = (idx < N) ? src[idx] : (T)0;
+
+#pragma unroll
+        for (int off = 1; off < SEG; off <<= 1) {
+          T n = (T)tl::shfl_up_sync(MASK, val, off);
+          if (lane >= off)
+            val += n;
+        }
+
+        val += carry;
+
+        if (idx < N)
+          dst[idx] = val;
+
+        T segSum = (T)tl::shfl_sync(MASK, val, SEG - 1);
+        if (lane == SEG - 1)
+          carry = segSum;
+        carry = (T)tl::shfl_sync(MASK, carry, SEG - 1);
+      }
+    }
+  }
+};
+
+template <int threads, int Axis = 0, bool reverse = false> struct CumSum2D {
+  static_assert(threads == 1024 or threads == 512 or threads == 256 or
+                threads == 128 or threads == 64 or threads == 32);
+  template <typename T, int SEG = 32>
+  static TL_DEVICE T run(const T *__restrict__ src, T *__restrict__ dst, int H,
+                         int W) {
+    constexpr int TILE_H = threads / SEG;
+    constexpr unsigned MASK = 0xffffffff;
+    const int num_blocks = (H + TILE_H - 1) / TILE_H;
+    const int tid = threadIdx.x;
+    const int lane = tid % 32;
+    const int row = tid / 32;
+
+    for (int b = 0; b < num_blocks; ++b) {
+      const int gRow = b * TILE_H + row;
+      if (gRow >= H)
+        return (T)0;
+
+      T carry = (T)0;
+
+      if (reverse) {
+        for (int seg = (W + SEG - 1) / SEG - 1; seg >= 0; --seg) {
+          const int col = seg * SEG + lane;
+
+          const int real_row = Axis == 1 ? gRow : col;
+          const int real_col = Axis == 1 ? col : gRow;
+
+          T val = (col < W) ? src[real_row * W + real_col] : (T)0;
+
+#pragma unroll
+          for (int off = 1; off < SEG; off <<= 1) {
+            T n = tl::shfl_down_sync(MASK, val, off);
+            if (lane < SEG - off)
+              val += n;
+          }
+
+          val += carry;
+
+          if (real_col < W)
+            dst[real_row * W + real_col] = val;
+
+          T segSum = tl::shfl_sync(MASK, val, 0);
+          if (lane == 0)
+            carry = segSum;
+          carry = tl::shfl_sync(MASK, carry, 0);
+        }
+      } else {
+        for (int seg = 0; seg * SEG < W; ++seg) {
+          const int col = seg * SEG + lane;
+
+          const int real_row = Axis == 1 ? gRow : col;
+          const int real_col = Axis == 1 ? col : gRow;
+
+          T val = (col < W) ? src[real_row * W + real_col] : (T)0;
+
+#pragma unroll
+          for (int off = 1; off < SEG; off <<= 1) {
+            T n = tl::shfl_up_sync(MASK, val, off);
+            if (lane >= off)
+              val += n;
+          }
+
+          val += carry;
+
+          if (real_col < W)
+            dst[real_row * W + real_col] = val;
+
+          T segSum = tl::shfl_sync(MASK, val, SEG - 1);
+          if (lane == SEG - 1)
+            carry = segSum;
+          carry = tl::shfl_sync(MASK, carry, SEG - 1);
+        }
+      }
+    }
+    return (T)0;
+  }
+};
+
+template <typename T, typename ReduceOp>
+TL_DEVICE T warp_reduce(T value, ReduceOp op) {
+  constexpr uint32_t mask = 0xffffffff;
+#if defined(__MUSA_ARCH__) && (__MUSA_ARCH__ >= 800)
+  auto run_reduce_sync = [&]<typename TCast>(TCast val) {
+    if constexpr (std::is_same_v<ReduceOp, SumOp>) {
+      return __reduce_add_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, MaxOp>) {
+      return __reduce_max_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, MinOp>) {
+      return __reduce_min_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, BitAndOp>) {
+      return __reduce_and_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, BitOrOp>) {
+      return __reduce_or_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, BitXorOp>) {
+      return __reduce_xor_sync(mask, val);
+    }
+  };
+
+  if constexpr (std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t>) {
+    return run_reduce_sync(value);
+  } else if constexpr (std::is_integral_v<T>) {
+    return static_cast<T>(run_reduce_sync(static_cast<int32_t>(value)));
+  }
+#endif
+
+  value = op(value, tl::shfl_xor_sync(mask, value, 16));
+  value = op(value, tl::shfl_xor_sync(mask, value, 8));
+  value = op(value, tl::shfl_xor_sync(mask, value, 4));
+  value = op(value, tl::shfl_xor_sync(mask, value, 2));
+  value = op(value, tl::shfl_xor_sync(mask, value, 1));
+  return value;
+}
+
+template <typename T> TL_DEVICE T warp_reduce_sum(T value) {
+  return warp_reduce<T>(value, SumOp());
+}
+
+template <typename T> TL_DEVICE T warp_reduce_max(T value) {
+  return warp_reduce<T>(value, MaxOp());
+}
+
+template <typename T> TL_DEVICE T warp_reduce_min(T value) {
+  return warp_reduce<T>(value, MinOp());
+}
+
+template <typename T> TL_DEVICE T warp_reduce_bitand(T value) {
+  return warp_reduce<T>(value, BitAndOp());
+}
+
+template <typename T> TL_DEVICE T warp_reduce_bitor(T value) {
+  return warp_reduce<T>(value, BitOrOp());
+}
+
+} // namespace tl

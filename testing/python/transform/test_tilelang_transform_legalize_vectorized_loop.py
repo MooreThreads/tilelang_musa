@@ -36,7 +36,7 @@ def vectorize_access_legalize(M: int = 64, N: int = 64):
 def assert_vectorize_access(M: int = 64, N: int = 64):
     func, expected = vectorize_access_legalize(M, N)
     mod = tvm.IRModule({func.attrs["global_symbol"]: func})
-    with tvm.target.Target("cuda"):
+    with tvm.target.Target("musa"):
         transformed = tl.transform.LegalizeVectorizedLoop()(mod)
     tvm.ir.assert_structural_equal(transformed["main"].body, expected.body)
 

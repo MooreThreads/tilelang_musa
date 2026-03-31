@@ -3,13 +3,12 @@ import tilelang.language as T
 import tilelang.testing
 
 
-@tilelang.testing.requires_cuda_compute_version_eq(8, 0)
 def test_copy_and_async_copy_gemm_codegen_equivalent_sm80():
     """For SM80, T.copy(global->shared) may lower to cp.async.
 
     This test checks that the explicit form:
       T.async_copy(...) + T.ptx_wait_group(0)
-    produces identical CUDA source as:
+    produces identical MUSA source as:
       T.copy(...)
 
     This is intentionally a codegen equivalence test (not a perf test).
@@ -82,9 +81,9 @@ def test_copy_and_async_copy_gemm_codegen_equivalent_sm80():
 
     sync_matmul_relu = matmul_relu_kernel
 
-    # Compile both and compare the generated CUDA source.
-    async_kernel = tilelang.compile(async_matmul_relu, target="cuda")
-    sync_kernel = tilelang.compile(sync_matmul_relu, target="cuda")
+    # Compile both and compare the generated MUSA source.
+    async_kernel = tilelang.compile(async_matmul_relu, target="musa")
+    sync_kernel = tilelang.compile(sync_matmul_relu, target="musa")
 
     async_src = async_kernel.get_kernel_source()
     sync_src = sync_kernel.get_kernel_source()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 from typing import Literal, Any
 from tilelang._typing import BufferLikeType
+from tilelang.language.frame import get_let_value, has_let_value
 from tilelang.utils.language import (
     to_buffer_region,
     legalize_pairwise_extents,
@@ -54,7 +55,9 @@ def copy(
     *,
     coalesced_width: int | None = None,
     disable_tma: bool = False,
+    force_async_copy: bool = False,
     eviction_policy: Literal["evict_normal", "evict_first", "evict_last"] | None = None,
+    src_robust_desc: tir.PrimExpr | None = None,
     annotations: dict | None = None,
     loop_layout: Any | None = None,
 ) -> tir.PrimExpr | tir.Stmt:
@@ -65,9 +68,14 @@ def copy(
         dst (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Destination memory region
         coalesced_width (Optional[int], keyword-only): Width for coalesced memory access. Defaults to None.
         disable_tma (bool, keyword-only): Whether to disable TMA acceleration. Defaults to False.
+        force_async_copy (bool, keyword-only): Force MUSA async-copy lowering for
+            this copy site. Defaults to False.
         eviction_policy (Optional[str], keyword-only): Cache eviction policy. Defaults to None.
+        src_robust_desc (Optional[tir.PrimExpr], keyword-only): MUSA robust source
+            descriptor created by `T.make_robust_desc(addr, size_bytes)`.
         annotations (Optional[dict], keyword-only): Additional annotations dict. If provided,
-            coalesced_width, disable_tma, and eviction_policy can also be specified here.
+            coalesced_width, disable_tma, force_async_copy, src_robust_desc, and
+            eviction_policy can also be specified here.
             Values in annotations take precedence over individual arguments.
         loop_layout (Optional[Fragment], keyword-only): A parallel loop layout hint for the SIMT copy
             (only valid for normal SIMT copy; incompatible with TMA/LDSM/STSM/TMem). When provided,
@@ -98,8 +106,32 @@ def copy(
       scope-specific decisions happen during lowering.
     """
     src, dst = _normalize_copy_regions(src, dst)
+    if isinstance(src_robust_desc, tir.Var) and has_let_value(src_robust_desc):
+        src_robust_desc = get_let_value(src_robust_desc)
+    if src_robust_desc is not None and not (
+        isinstance(src_robust_desc, tir.Call)
+        and src_robust_desc.op.same_as(tir.op.Op.get("tl.make_robust_desc"))
+        and len(src_robust_desc.args) == 2
+    ):
+        raise ValueError("src_robust_desc must be created by T.make_robust_desc(addr, size_bytes)")
+
     if isinstance(src, tir.BufferLoad) and isinstance(dst, tir.BufferLoad):
-        return tir.BufferStore(dst.buffer, src, dst.indices)
+        body: tir.Stmt = tir.BufferStore(dst.buffer, src, dst.indices)
+        if src_robust_desc is not None:
+            body = tir.AttrStmt(
+                src.buffer.data,
+                "tl.source_robust_desc",
+                src_robust_desc,
+                body,
+            )
+        if force_async_copy:
+            body = tir.AttrStmt(
+                tir.IntImm("int32", 0),
+                "tl.force_async_copy",
+                tir.IntImm("int32", 1),
+                body,
+            )
+        return body
 
     # Build annotations dict
     ann = annotations.copy() if annotations else {}
@@ -109,6 +141,10 @@ def copy(
         ann["coalesced_width"] = coalesced_width
     if "disable_tma" not in ann and disable_tma:
         ann["disable_tma"] = disable_tma
+    if "force_async_copy" not in ann and force_async_copy:
+        ann["force_async_copy"] = tir.IntImm("int32", 1)
+    if "src_robust_desc" not in ann and src_robust_desc is not None:
+        ann["src_robust_desc"] = src_robust_desc
     if "eviction_policy" not in ann and eviction_policy is not None:
         eviction_policy_map = {"evict_normal": 0, "evict_first": 1, "evict_last": 2}
         ann["eviction_policy"] = eviction_policy_map[eviction_policy]

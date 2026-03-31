@@ -31,10 +31,10 @@ def test_int64_address():
 
     D = 2
     S = 10
-    cache = torch.rand((S, D), device="cuda", dtype=torch.float32)
-    value = torch.rand((S, D), device="cuda", dtype=torch.float32)
-    pos_int64 = torch.arange(S, device="cuda", dtype=torch.int64)
-    pos_int32 = torch.arange(S, device="cuda", dtype=torch.int32)
+    cache = torch.rand((S, D), device="musa", dtype=torch.float32)
+    value = torch.rand((S, D), device="musa", dtype=torch.float32)
+    pos_int64 = torch.arange(S, device="musa", dtype=torch.int64)
+    pos_int32 = torch.arange(S, device="musa", dtype=torch.int32)
     kernel_int64 = set_cache_kernel(S, D, "int64")
     kernel_int32 = set_cache_kernel(S, D, T.int32)
     kernel_int64(pos_int64, value, cache)

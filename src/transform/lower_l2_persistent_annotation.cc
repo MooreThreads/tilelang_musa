@@ -28,8 +28,6 @@ public:
   static PrimFunc Substitute(PrimFunc &f) {
     PrimFuncNode *fptr = f.CopyOnWrite();
     LowerL2Persistent substituter;
-    // Trace the buffer map for tvm_access_ptr
-    substituter.buffer_map_.insert(f->buffer_map.begin(), f->buffer_map.end());
     for (const auto &[_, buffer] : f->buffer_map) {
       substituter.buffer_data_to_buffer_.Set(buffer->data, buffer);
     }
@@ -57,12 +55,6 @@ public:
   Stmt VisitStmt_(const BlockNode *op) final {
     // Record the mapping from buffer data var to buffer for later lookup
     for (auto buffer : op->alloc_buffers) {
-      buffer_map_.insert({buffer->data, buffer});
-    }
-    for (auto match_buffer : op->match_buffers) {
-      buffer_map_.insert({match_buffer->buffer->data, match_buffer->buffer});
-    }
-    for (auto buffer : op->alloc_buffers) {
       buffer_data_to_buffer_.Set(buffer->data, buffer);
     }
 
@@ -84,7 +76,6 @@ public:
 private:
   // Mapping from data Var of a Buffer to Buffer, for lookup
   Map<Var, Buffer> buffer_data_to_buffer_;
-  std::unordered_map<Var, Buffer, ObjectPtrHash, ObjectPtrEqual> buffer_map_;
   Map<Buffer, FloatImm> hit_ratio_map_;
   LowerL2Persistent() = default;
 };

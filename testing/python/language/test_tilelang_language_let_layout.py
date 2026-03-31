@@ -72,17 +72,17 @@ def run_blocksparse_copy(M, N, block_M, block_N, pass_configs=None):
     kernel = tilelang.compile(
         program,
         out_idx=[1],
-        target="cuda",
+        target="musa",
         pass_configs=pass_configs or {},
     )
 
     # Initialize tensors
-    a = torch.randn(M, N, device="cuda", dtype=torch.float16)
-    b = torch.zeros(M, N, device="cuda", dtype=torch.float16)
+    a = torch.randn(M, N, device="musa", dtype=torch.float16)
+    b = torch.zeros(M, N, device="musa", dtype=torch.float16)
 
     # Create BlockMask with valid row indices
     num_row_blocks = M // block_M
-    block_mask = torch.zeros((num_row_blocks, N_S), dtype=torch.int32, device="cuda")
+    block_mask = torch.zeros((num_row_blocks, N_S), dtype=torch.int32, device="musa")
     for by in range(num_row_blocks):
         for i in range(N_S):
             max_row_block = (M - block_M) // block_M
@@ -98,13 +98,13 @@ def run_blocksparse_copy(M, N, block_M, block_N, pass_configs=None):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_blocksparse_copy_tma():
     """Test blocksparse copy with TMA (Tensor Memory Accelerator)."""
     run_blocksparse_copy(M=1024, N=1024, block_M=128, block_N=128, pass_configs={})
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_blocksparse_copy_cp_async():
     """Test blocksparse copy with CP.ASYNC (without TMA)."""
     run_blocksparse_copy(

@@ -27,9 +27,9 @@ def chain_equal(N, block_size, dtype=T.float32):
 
 def run_chain_equal(N=128, block_size=64, dtype=T.float32):
     kernel = chain_equal(N, block_size, dtype)
-    A = torch.zeros((N,), dtype=torch.float32, device="cuda")
-    B = torch.zeros((N,), dtype=torch.float32, device="cuda")
-    C = torch.zeros((N,), dtype=torch.float32, device="cuda")
+    A = torch.zeros((N,), dtype=torch.float32, device="musa")
+    B = torch.zeros((N,), dtype=torch.float32, device="musa")
+    C = torch.zeros((N,), dtype=torch.float32, device="musa")
     kernel(A, B, C)
     ref = torch.ones_like(A)
     torch.testing.assert_close(A, ref)
@@ -37,7 +37,7 @@ def run_chain_equal(N=128, block_size=64, dtype=T.float32):
     torch.testing.assert_close(C, ref)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_chain_equal():
     run_chain_equal()
 

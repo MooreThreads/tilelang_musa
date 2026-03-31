@@ -32,9 +32,11 @@ using namespace tir;
 class PTXAsyncCopyInjector : public StmtMutator {
 public:
   explicit PTXAsyncCopyInjector(bool enable_auto_async_copy,
-                                bool async_without_async_commit_wait)
+                                bool async_without_async_commit_wait,
+                                bool disable_force_async_wait = false)
       : enable_auto_async_copy_(enable_auto_async_copy),
-        async_without_async_commit_wait_(async_without_async_commit_wait) {}
+        async_without_async_commit_wait_(async_without_async_commit_wait),
+        disable_force_async_wait_(disable_force_async_wait) {}
 
   Stmt Finalize(Stmt body) {
     if (!pending_sync_copies_ || async_without_async_commit_wait_) {
@@ -50,6 +52,24 @@ public:
     pending_sync_copies_ = false;
     uncommitted_sync_copies_ = false;
     return SeqStmt(seq);
+  }
+
+  Stmt VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == tl::attr::kSourceRobustDesc) {
+      PrimExpr previous_src_robust_desc = current_src_robust_desc_;
+      current_src_robust_desc_ = op->value;
+      Stmt body = this->VisitStmt(op->body);
+      current_src_robust_desc_ = previous_src_robust_desc;
+      return AttrStmt(op->node, op->attr_key, op->value, body);
+    }
+    if (op->attr_key == tl::attr::kForceAsyncCopy) {
+      bool previous_force_async_copy = in_force_async_copy_;
+      in_force_async_copy_ = true;
+      Stmt body = this->VisitStmt(op->body);
+      in_force_async_copy_ = previous_force_async_copy;
+      return AttrStmt(op->node, op->attr_key, op->value, body);
+    }
+    return StmtMutator::VisitStmt_(op);
   }
 
   Stmt VisitStmt_(const ForNode *op) final {
@@ -114,7 +134,8 @@ public:
           store, ptr_info.value(),
           /*dst_base_load=*/BufferLoad(store->buffer, store->indices),
           /*src_base_load=*/BufferLoad(load->buffer, load->indices),
-          /*bytes=*/index_info->transfer_bytes, predicated, predicate_value);
+          /*bytes=*/index_info->transfer_bytes, predicated, predicate_value,
+          current_src_robust_desc_);
     }
 
     Optional<Array<PrimExpr>> src_base_indices =
@@ -134,7 +155,8 @@ public:
         store, ptr_info.value(),
         /*dst_base_load=*/BufferLoad(store->buffer, dst_base_indices.value()),
         /*src_base_load=*/BufferLoad(load->buffer, src_base_indices.value()),
-        /*bytes=*/index_info->transfer_bytes, predicated, predicate_value);
+        /*bytes=*/index_info->transfer_bytes, predicated, predicate_value,
+        current_src_robust_desc_);
   }
 
   Stmt VisitStmt_(const SeqStmtNode *op) final {
@@ -254,7 +276,7 @@ public:
       return StmtMutator::VisitStmt_(store);
     }
     // Only lower copies in regions where async-copy rewrite is enabled.
-    if (!enable_auto_async_copy_) {
+    if (!enable_auto_async_copy_ && !in_force_async_copy_) {
       return StmtMutator::VisitStmt_(store);
     }
 
@@ -266,7 +288,8 @@ public:
           TryInjectPTX(load, store, predicate.defined(),
                        predicate.defined() ? predicate.value() : PrimExpr());
       if (injected.defined()) {
-        if (!async_without_async_commit_wait_) {
+        if (!async_without_async_commit_wait_ &&
+            !(in_force_async_copy_ && disable_force_async_wait_)) {
           pending_sync_copies_ = true;
           uncommitted_sync_copies_ = true;
         }
@@ -482,10 +505,13 @@ private:
                  IntImm(DataType::Int(32), rw_mask)});
   }
 
-  static Optional<Stmt> MakeCPAsyncStmtFromLoads(
-      const BufferStoreNode *store, const PointerTypeInfo &ptr_info,
-      const BufferLoad &dst_base_load, const BufferLoad &src_base_load,
-      int bytes, bool predicated, const PrimExpr &predicate_value) {
+  Optional<Stmt> MakeCPAsyncStmtFromLoads(const BufferStoreNode *store,
+                                          const PointerTypeInfo &ptr_info,
+                                          const BufferLoad &dst_base_load,
+                                          const BufferLoad &src_base_load,
+                                          int bytes, bool predicated,
+                                          const PrimExpr &predicate_value,
+                                          const PrimExpr &robust_desc) const {
     int dst_elem_count = bytes / ptr_info.dst_elem_type.bytes();
     int src_elem_count = bytes / ptr_info.src_elem_type.bytes();
     if (dst_elem_count <= 0 || src_elem_count <= 0) {
@@ -498,14 +524,22 @@ private:
         MakeAccessPtrFromLoad(src_base_load, src_elem_count, /*rw_mask=*/1);
 
     ffi::Array<PrimExpr> cp_async_args;
-    if (predicated) {
+    Op op = tvm::tir::builtin::ptx_cp_async();
+    if (robust_desc.defined()) {
+      op = tl::musa_cp_async_robust();
+      auto [robust_base, robust_size] = GetRobustDescArgs(robust_desc);
+      cp_async_args = {dst_access_ptr, src_access_ptr, PrimExpr(bytes),
+                       robust_base, robust_size};
+      if (predicated) {
+        cp_async_args.push_back(predicate_value);
+      }
+    } else if (predicated) {
       cp_async_args = {dst_access_ptr, src_access_ptr, PrimExpr(bytes),
                        predicate_value};
     } else {
       cp_async_args = {dst_access_ptr, src_access_ptr, PrimExpr(bytes)};
     }
-    return Evaluate(Call(store->buffer->dtype,
-                         tvm::tir::builtin::ptx_cp_async(), cp_async_args));
+    return Evaluate(Call(store->buffer->dtype, op, cp_async_args));
   }
 
   static Stmt MakeCommitGroupStmt() {
@@ -515,6 +549,14 @@ private:
   static Stmt MakeWaitGroupStmt(int n) {
     return Evaluate(Call(DataType::Handle(), builtin::ptx_wait_group(),
                          {IntImm(DataType::Int(32), n)}));
+  }
+
+  static std::pair<PrimExpr, PrimExpr> GetRobustDescArgs(const PrimExpr &desc) {
+    const auto *call = desc.as<CallNode>();
+    ICHECK(call && call->op.same_as(tl::make_robust_desc()))
+        << "Expected tl.make_robust_desc call, but got " << desc;
+    ICHECK_EQ(call->args.size(), 2);
+    return {call->args[0], call->args[1]};
   }
 
   // ---- Vectorized-offset contiguity helpers ----
@@ -615,7 +657,8 @@ private:
         return out;
       }
       if (call->op.same_as(builtin::ptx_cp_async()) ||
-          call->op.same_as(tl::ptx_cp_async())) {
+          call->op.same_as(tl::ptx_cp_async()) ||
+          call->op.same_as(tl::musa_cp_async_robust())) {
         return out;
       }
       if (call->op.same_as(builtin::ptx_commit_group())) {
@@ -688,9 +731,12 @@ private:
 
   bool enable_auto_async_copy_{true};
   bool async_without_async_commit_wait_{false};
+  bool disable_force_async_wait_{false};
   int current_vectorized_lanes_{1};
   std::vector<ActiveVectorizedLoop> active_vectorized_loops_;
   arith::Analyzer analyzer_;
+  bool in_force_async_copy_{false};
+  PrimExpr current_src_robust_desc_;
   bool pending_sync_copies_{false};
   bool uncommitted_sync_copies_{false};
 };
@@ -700,7 +746,8 @@ using namespace tir::transform;
 Stmt InjectPTXAsyncCopy(const Stmt &body, bool enable_auto_async_copy,
                         bool async_without_async_commit_wait) {
   PTXAsyncCopyInjector injector(enable_auto_async_copy,
-                                async_without_async_commit_wait);
+                                async_without_async_commit_wait,
+                                /*disable_force_async_wait=*/false);
   return injector.Finalize(injector(body));
 }
 
@@ -711,7 +758,7 @@ tvm::transform::Pass LowerPTXAsyncCopy() {
       return f;
     }
     Target target = target_opt.value();
-    if (!TargetIsCuda(target)) {
+    if (!TargetIsCuda(target) && !TargetIsMusa(target)) {
       return f;
     }
 
@@ -722,10 +769,13 @@ tvm::transform::Pass LowerPTXAsyncCopy() {
 
     bool enable_auto_async_copy =
         ctx->GetConfig<Bool>(kEnableAsyncCopy, Bool(true)).value();
+    bool disable_thread_storage_sync =
+        ctx->GetConfig<Bool>(kDisableThreadStorageSync, Bool(false)).value();
 
     auto *n = f.CopyOnWrite();
     PTXAsyncCopyInjector injector(enable_auto_async_copy,
-                                  /*async_without_async_commit_wait=*/false);
+                                  /*async_without_async_commit_wait=*/false,
+                                  disable_thread_storage_sync);
     n->body = injector.Finalize(injector(n->body));
     return f;
   };

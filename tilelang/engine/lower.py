@@ -9,8 +9,8 @@ from tvm import tir
 import tvm_ffi
 from tvm.ir import CallingConv
 from tvm.target import Target
-from tilelang.contrib import hipcc, nvcc
-from tilelang.env import COMPOSABLE_KERNEL_INCLUDE_DIR, CUTLASS_INCLUDE_DIR, TILELANG_TEMPLATE_PATH
+from tilelang.contrib import hipcc, mcc, nvcc
+from tilelang.env import COMPOSABLE_KERNEL_INCLUDE_DIR, CUTLASS_INCLUDE_DIR, MUTLASS_INCLUDE_DIR, TILELANG_TEMPLATE_PATH
 from tilelang.transform import PassConfigKey
 from tilelang.transform.metal import MarkHostMetalContext
 from tilelang.engine.param import KernelParam, CompiledArtifact
@@ -111,6 +111,50 @@ def tilelang_callback_cuda_compile(code, target, pass_config=None):
     return ptx
 
 
+@tvm_ffi.register_global_func("tilelang_callback_musa_compile", override=True)
+def tilelang_callback_musa_compile(code, target, pass_config=None):
+    target_arch = mcc.get_musa_arch(mcc.get_musa_compute_version(target))
+
+    cfg = pass_config or {}
+    enable_fast_math = bool(cfg.get(PassConfigKey.TL_ENABLE_FAST_MATH, False))
+
+    musa_arch_macro = target_arch + "0"
+    options = [
+        "-std=c++17",
+        "-I" + TILELANG_TEMPLATE_PATH,
+        "-I" + MUTLASS_INCLUDE_DIR,
+        f"-D__MUSA_ARCH_LIST__={musa_arch_macro}",
+        "-mllvm",
+        "-mtgpu-alloc-shared-memory-from-zero=1",
+    ]
+
+    extra_flags = cfg.get(PassConfigKey.TL_DEVICE_COMPILE_FLAGS, None)
+    if extra_flags:
+        import shlex
+
+        if isinstance(extra_flags, str):
+            tokens = shlex.split(extra_flags)
+        else:
+            tokens = []
+            for flag in extra_flags:
+                if isinstance(flag, str):
+                    tokens.extend(shlex.split(flag))
+                else:
+                    tokens.append(str(flag))
+        options += tokens
+
+    if enable_fast_math:
+        options.append("-ffast-math")
+
+    mubin = mcc.compile_musa(
+        code,
+        target_format="mubin",
+        arch=f"mp_{target_arch}",
+        options=options if options else None,
+    )
+    return mubin
+
+
 @tvm_ffi.register_global_func("tilelang_callback_hip_compile", override=True)
 def tilelang_callback_hip_compile(code, target):
     hsaco = hipcc.compile_hip(
@@ -186,6 +230,8 @@ def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
     if target.kind.name == "cuda":
         global_func = "target.build.tilelang_" + ("cutedsl" if "cutedsl" in target.keys else "cuda")
         device_mod = tvm.ffi.get_global_func(global_func)(device_mod, target)
+    elif target.kind.name == "musa":
+        device_mod = tvm.ffi.get_global_func("target.build.tilelang_musa")(device_mod, target)
     elif target.kind.name == "hip":
         device_mod = tvm.ffi.get_global_func("target.build.tilelang_hip")(device_mod, target)
     elif target.kind.name == "metal":
@@ -205,6 +251,8 @@ def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> 
     if target.kind.name == "cuda":
         global_func = "target.build.tilelang_" + ("cutedsl" if "cutedsl" in target.keys else "cuda") + "_without_compile"
         device_mod = tvm.ffi.get_global_func(global_func)(device_mod, target)
+    elif target.kind.name == "musa":
+        device_mod = tvm.ffi.get_global_func("target.build.tilelang_musa_without_compile")(device_mod, target)
     elif target.kind.name == "hip":
         device_mod = tvm.ffi.get_global_func("target.build.tilelang_hip_without_compile")(device_mod, target)
     elif target.kind.name == "c":

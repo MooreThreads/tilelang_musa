@@ -21,6 +21,7 @@
 
 import pytest
 import tilelang
+import tilelang.testing
 import tilelang.language as T
 import tvm_ffi
 import torch
@@ -32,8 +33,6 @@ from tilelang.cache import _dispatch_map
 BACKENDS = [
     "tvm_ffi",
     "cython",
-    "nvrtc",
-    "cutedsl",
 ]
 
 
@@ -52,7 +51,7 @@ class PostProcCounter:
     def register_callback(self, backend: str):
         """Register postproc callback for the given backend."""
         comment_prefix = "#" if backend == "cutedsl" else "//"
-        global_func = "tilelang_callback_cutedsl_postproc" if backend == "cutedsl" else "tilelang_callback_cuda_postproc"
+        global_func = "tilelang_callback_cutedsl_postproc" if backend == "cutedsl" else "tilelang_callback_musa_postproc"
 
         def callback(code, _):
             self.count += 1
@@ -80,7 +79,7 @@ def setup_module_env():
     env.TILELANG_TMP_DIR = original_tmp_dir
 
     # Restore default postproc callbacks
-    tvm_ffi.register_global_func("tilelang_callback_cuda_postproc", f=lambda code, _: code, override=True)
+    tvm_ffi.register_global_func("tilelang_callback_musa_postproc", f=lambda code, _: code, override=True)
     tvm_ffi.register_global_func("tilelang_callback_cutedsl_postproc", f=lambda code, _: code, override=True)
 
 
@@ -118,13 +117,12 @@ def clean_cache_env(tmp_path, request):
     return cache_dir
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_disk_cache_with_postproc(clean_cache_env, backend):
     """Test disk cache for multiple backends using postproc callback.
 
-    Tests all CUDA-based backends: nvrtc, cutedsl
-    (tvm_ffi, cython, torch use the same cuda_postproc callback as nvrtc)
+    Tests all currently supported MUSA execution backends: tvm_ffi, cython.
 
     Verification logic:
     1. Pass 1: cache miss → postproc called → marker in kernel source
@@ -184,8 +182,8 @@ def test_disk_cache_with_postproc(clean_cache_env, backend):
     assert counter.marker in source2, f"Expected cached marker '{counter.marker}' in source"
 
     # === Verify functional correctness ===
-    a = torch.randn(M, N, dtype=torch.float32).cuda()
-    b = torch.randn(M, N, dtype=torch.float32).cuda()
+    a = torch.randn(M, N, dtype=torch.float32).musa()
+    b = torch.randn(M, N, dtype=torch.float32).musa()
 
     c1 = kernel1(a, b)
     c2 = kernel2(a, b)
@@ -196,7 +194,7 @@ def test_disk_cache_with_postproc(clean_cache_env, backend):
     torch.testing.assert_close(c1, c2)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_cache_miss_detection(clean_cache_env, backend):
     """Verify cache correctly misses when function changes.
@@ -247,7 +245,7 @@ def test_cache_miss_detection(clean_cache_env, backend):
     assert counter.count == 2, f"Different function should cause cache miss, expected 2 calls, got {counter.count}"
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_cache_isolation_between_tests(clean_cache_env, backend):
     """Verify cache isolation between tests.

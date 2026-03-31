@@ -103,6 +103,10 @@ def is_hip_target(target: Target) -> bool:
     return target.kind.name == "hip"
 
 
+def is_musa_target(target: Target) -> bool:
+    return target.kind.name == "musa"
+
+
 def is_cpu_target(target: Target) -> bool:
     return target.kind.name in ["c"]
 

@@ -39,13 +39,13 @@ def _ceildiv_kernel_dyn(b: int):
 
 def run_ceildiv_dyn(a=128, b=32):
     kernel = _ceildiv_kernel_dyn(b)
-    A = torch.empty((1,), dtype=torch.int32, device="cuda")
+    A = torch.empty((1,), dtype=torch.int32, device="musa")
     kernel(A, a)
     print(kernel.get_kernel_source())
     print(A)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_ceildiv_dyn():
     run_ceildiv_dyn(a=128, b=32)
     run_ceildiv_dyn(a=1, b=32)

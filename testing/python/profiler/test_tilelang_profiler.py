@@ -31,8 +31,8 @@ def test_profiler():
 
     import torch
 
-    a = torch.randn(1024, 1024).cuda().half()
-    b = torch.randn(1024, 1024).cuda().half()
+    a = torch.randn(1024, 1024).musa().half()
+    b = torch.randn(1024, 1024).musa().half()
 
     c = kernel(a, b)
     ref_c = a @ b

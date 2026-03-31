@@ -6,6 +6,7 @@
 #ifndef TVM_TL_LAYOUT_LAYOUT_H_
 #define TVM_TL_LAYOUT_LAYOUT_H_
 
+#include <array>
 #include <exception>
 #include <tvm/arith/analyzer.h>
 #include <tvm/arith/iter_affine_map.h>
@@ -218,6 +219,9 @@ IterVar make_itervar(std::string name, PrimExpr dom);
 
 Fragment makeGemmFragment8x8();
 Fragment makeGemmFragment8x8Transposed();
+Fragment makeGemmQY2FragmentC(const int block_m, const int block_n,
+                              const int warp_m, const int warp_n,
+                              const int element_size);
 Fragment makeGemmFragmentC(const int block_m, const int block_n,
                            const int warp_m, const int warp_n,
                            const int element_size);
@@ -230,6 +234,12 @@ Fragment makeGemmFragmentCCDNA(const int block_m, const int block_n,
 Fragment makeGemmFragmentCHopper(const int block_m, const int block_n,
                                  const int warp_m, const int warp_n,
                                  const int element_size);
+Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
+                              const int warp_m, const int warp_n,
+                              const int element_size,
+                              const std::array<int, 3> &inst_shape = {0, 0, 0});
+Fragment makeGemmFragmentCLinear(const int block_m, const int block_n,
+                                 const int block_size);
 Fragment makeGemmFragmentA(const int block_m, const int block_n,
                            const int block_k, const int warp_m,
                            const int warp_n, const int element_size,
@@ -245,12 +255,15 @@ Fragment makeGemmFragmentACDNA(const int block_m, const int block_n,
 
 // Default Memory Layout (row-major linear layout for any dimension)
 Layout makeLinearLayout(Array<PrimExpr> shape);
+Layout makeGemmLayoutLinear(int stride, int continuous);
 Layout makeGemmABLayoutPadded(int stride, int continuous, int element_size);
 Layout makeGemmABLayout(int mat_stride, int mat_continuous, int continuity,
                         int element_size, bool k_inner = true);
 Layout makeGemmABLayoutHopper(int mat_stride, int mat_continuous,
                               int continuity, int element_size,
                               bool k_inner = true);
+Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
+                           int element_size, bool k_inner = true);
 Layout makeGemmABLayoutSm100(int mat_stride, int mat_continuous, int continuity,
                              int element_size, bool k_inner = true);
 Layout makeGemmABLayoutCDNA(int stride, int continuous, int element_size,
@@ -270,6 +283,10 @@ Layout makeTensorOpMultiplicand(int mat_stride, int mat_continuous,
 Layout makeGemmSparseAmpereABLayout(int mat_stride, int mat_continuous,
                                     int elementsize);
 
+Layout makeFullBankSwizzleLayout(int stride, int continuous, int element_size);
+Layout makeHalfBankSwizzleLayout(int stride, int continuous, int element_size);
+Layout makeQuarterBankSwizzleLayout(int stride, int continuous,
+                                    int element_size);
 Layout makeFullBankSwizzleLayout(const Buffer &buffer);
 Layout makeHalfBankSwizzleLayout(const Buffer &buffer);
 Layout makeQuarterBankSwizzleLayout(const Buffer &buffer);
@@ -295,6 +312,12 @@ Optional<Layout> MergeSwizzleLayouts(const Layout &layout1,
 namespace attr {
 // BlockAttr, Containing the layout for all the buffers in the block
 constexpr const char *kLayoutMap = "layout_map";
+// BlockAttr, Containing k-major info for gemm-related layouts in the block
+constexpr const char *kKMajorMap = "k_major_map";
+// BlockAttr, Containing sqmma info for gemm-related layouts in the block
+constexpr const char *kSqmmaMap = "sqmma_map";
+// BlockAttr, Containing sqmma split-inst info for gemm-related layouts
+constexpr const char *kSqmmaInstSplitMap = "sqmma_inst_split_map";
 // ForAttr, Containing the parallel loop layout for a parallel for loop
 constexpr const char *kParallelLoopLayout = "parallel_loop_layout";
 // ForAttr, Containing the predicate for a parallel for loop

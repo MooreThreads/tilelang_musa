@@ -9,11 +9,12 @@ from tilelang import tvm as tvm
 from tilelang import _ffi_api
 from tvm.target import Target
 from tvm.contrib import rocm
-from tilelang.contrib import nvcc
+from tilelang.contrib import mcc, nvcc
 
 SUPPORTED_TARGETS: dict[str, str] = {
-    "auto": "Auto-detect CUDA/HIP/Metal based on availability.",
+    "auto": "Auto-detect CUDA/MUSA/HIP/Metal based on availability.",
     "cuda": "CUDA GPU target (supports options such as `cuda -arch=sm_80`).",
+    "musa": "MUSA GPU target (supports options such as `musa -arch=mp_22`).",
     "hip": "ROCm HIP target (supports options like `hip -mcpu=gfx90a`).",
     "metal": "Apple Metal target for arm64 Macs.",
     "llvm": "LLVM CPU target (accepts standard TVM LLVM options).",
@@ -51,6 +52,19 @@ def check_hip_availability() -> bool:
     """
     try:
         rocm.find_rocm_path()
+        return True
+    except Exception:
+        return False
+
+
+def check_musa_availability() -> bool:
+    """
+    Check if MUSA is available on the system by locating MUSA toolchain path.
+    Returns:
+        bool: True if MUSA is available, False otherwise.
+    """
+    try:
+        mcc.find_musa_path()
         return True
     except Exception:
         return False
@@ -119,7 +133,7 @@ def normalize_cutedsl_target(target: str | Target) -> Target | None:
 
 def determine_target(target: str | Target | Literal["auto"] = "auto", return_object: bool = False) -> str | Target:
     """
-    Determine the appropriate target for compilation (CUDA, HIP, or manual selection).
+    Determine the appropriate target for compilation (CUDA/MUSA/HIP/Metal or manual selection).
 
     Args:
         target (Union[str, Target, Literal["auto"]]): User-specified target.
@@ -130,7 +144,7 @@ def determine_target(target: str | Target | Literal["auto"] = "auto", return_obj
         Union[str, Target]: The selected target ("cuda", "hip", or a valid Target object).
 
     Raises:
-        ValueError: If no CUDA or HIP is available and the target is "auto".
+        ValueError: If no CUDA/MUSA/HIP/Metal target is available and target is "auto".
         AssertionError: If the target is invalid.
     """
 
@@ -140,8 +154,9 @@ def determine_target(target: str | Target | Literal["auto"] = "auto", return_obj
         target = tvm.target.Target.current(allow_none=True)
         if target is not None:
             return target
-        # Check for CUDA and HIP availability
+        # Check for CUDA/MUSA/HIP availability
         is_cuda_available = check_cuda_availability()
+        is_musa_available = check_musa_availability()
         is_hip_available = check_hip_availability()
 
         # Determine the target based on availability
@@ -150,12 +165,14 @@ def determine_target(target: str | Target | Literal["auto"] = "auto", return_obj
                 return_var = Target({"kind": "cuda", "arch": f"sm_{nvcc.get_target_arch(cap)}"})
             else:
                 return_var = "cuda"
+        elif is_musa_available:
+            return_var = "musa"
         elif is_hip_available:
             return_var = "hip"
         elif check_metal_availability():
             return_var = "metal"
         else:
-            raise ValueError("No CUDA or HIP or MPS available on this system.")
+            raise ValueError("No CUDA or MUSA or HIP or MPS available on this system.")
 
     else:
         possible_cutedsl_target = normalize_cutedsl_target(target)
@@ -201,6 +218,10 @@ def target_is_cuda(target: Target) -> bool:
     return _ffi_api.TargetIsCuda(target)
 
 
+def target_is_musa(target: Target) -> bool:
+    return _ffi_api.TargetIsMusa(target)
+
+
 def target_is_hip(target: Target) -> bool:
     return _ffi_api.TargetIsRocm(target)
 
@@ -235,6 +256,14 @@ def target_is_cdna(target: Target) -> bool:
 
 def target_is_gfx950(target: Target) -> bool:
     return _ffi_api.TargetIsGfx950(target)
+
+
+def target_is_qy2(target: Target) -> bool:
+    return _ffi_api.TargetIsQY2(target)
+
+
+def target_is_ph1(target: Target) -> bool:
+    return _ffi_api.TargetIsPH1(target)
 
 
 def target_has_async_copy(target: Target) -> bool:

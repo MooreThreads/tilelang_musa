@@ -3,26 +3,25 @@ import tilelang.language as T
 import tilelang.testing
 
 
+@tilelang.jit(out_idx=-1)
+def get_var_assign_kernel():
+    @T.prim_func
+    def main(A: T.Tensor((2,), T.int32)):
+        with T.Kernel(1) as _:
+            a = T.alloc_var(T.int32, init=1)
+            b = T.alloc_var(T.int32, init=a)
+            a = 2
+            d = T.alloc_var(T.int32, init=a)
+            A[0] = b
+            A[1] = d
+
+    return main
+
+
 # TODO: var init is not supported on hip.
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_var_assign() -> None:
-    @tilelang.jit(out_idx=-1)
-    def jit_kernel():
-        @T.prim_func
-        def test_var_assign(A: T.Tensor((2,), T.int32)):
-            with T.Kernel(1) as _:
-                a = T.alloc_var(T.int32, init=1)
-                b = T.alloc_var(T.int32, init=a)  # b gets value of a
-                a = 2
-                d = T.alloc_var(T.int32, init=a)  # c gets new value of a
-                A[0] = b
-                A[1] = d
-
-        print(test_var_assign)
-        return test_var_assign
-
-    kernel = jit_kernel()
-    print(kernel.get_kernel_source())
+    kernel = get_var_assign_kernel()
     res = kernel()
     assert res[0] == 1
     assert res[1] == 2

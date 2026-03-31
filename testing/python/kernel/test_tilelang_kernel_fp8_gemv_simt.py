@@ -126,26 +126,26 @@ def evaluate_gemv_simt(
 ):
     program = gemv_simt(M, N, K, in_dtype, out_dtype, accum_dtype, trans_A, trans_B, with_bias)
 
-    kernel = JITKernel(program, target="cuda")
+    kernel = JITKernel(program, target="musa")
 
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
     accum_dtype = map_torch_type(accum_dtype)
 
     if in_dtype in {torch.int8, torch.int32}:
-        A = torch.randint(-128, 128, (M, K), dtype=torch.int8).to(in_dtype).cuda()
-        B = torch.randint(-128, 128, (N, K), dtype=torch.int8).to(in_dtype).cuda()
-        Bias = torch.randint(-128, 128, (N,), dtype=torch.int32).to(accum_dtype).cuda()
+        A = torch.randint(-128, 128, (M, K), dtype=torch.int8).to(in_dtype).musa()
+        B = torch.randint(-128, 128, (N, K), dtype=torch.int8).to(in_dtype).musa()
+        Bias = torch.randint(-128, 128, (N,), dtype=torch.int32).to(accum_dtype).musa()
     elif in_dtype in {torch.float8_e4m3fn, torch.float8_e5m2}:
-        A = torch.randn(M, K).to(in_dtype).cuda()
-        B = torch.randn(N, K).to(in_dtype).cuda()
-        Bias = torch.randn(N).to(accum_dtype).cuda()
+        A = torch.randn(M, K).to(in_dtype).musa()
+        B = torch.randn(N, K).to(in_dtype).musa()
+        Bias = torch.randn(N).to(accum_dtype).musa()
     else:
-        A = torch.randn(M, K).to(in_dtype).cuda() - 0.5
-        B = torch.randn(N, K).to(in_dtype).cuda() - 0.5
-        Bias = torch.randn(N).to(accum_dtype).cuda() - 0.5
+        A = torch.randn(M, K).to(in_dtype).musa() - 0.5
+        B = torch.randn(N, K).to(in_dtype).musa() - 0.5
+        Bias = torch.randn(N).to(accum_dtype).musa() - 0.5
 
-    C = torch.zeros(M, N).to(out_dtype).cuda()
+    C = torch.zeros(M, N).to(out_dtype).musa()
 
     if with_bias:
         kernel(A, B, Bias, C)
@@ -161,8 +161,7 @@ def evaluate_gemv_simt(
     tilelang.testing.torch_assert_close(C, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version(8, 9)
+@tilelang.testing.requires_musa
 def test_gemv_simt():
     evaluate_gemv_simt(1, 1024, 1024, T.float8_e4m3fn, T.float32, T.float32, with_bias=False)
     evaluate_gemv_simt(1, 1024, 1024, T.float8_e5m2, T.float32, T.float32, with_bias=False)

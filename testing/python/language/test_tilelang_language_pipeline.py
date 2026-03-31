@@ -172,14 +172,14 @@ def run_blocksparse_matmul(num_stages):
     sparsity = 0.5
 
     # Initialize input matrices A and B on the GPU with half precision
-    a = torch.randn(M, K).cuda().half()
-    b = torch.randn(K, N).cuda().half()
+    a = torch.randn(M, K).musa().half()
+    b = torch.randn(K, N).musa().half()
 
     kernel = blocksparse_matmul(M, N, K, block_M=block_M, block_N=block_N, block_K=block_K, num_stages=num_stages)
     print(kernel.get_kernel_source())
     # Create block mask with desired sparsity
     mask_shape = (M // block_M, N // block_N, K // block_K)
-    block_mask = torch.rand(mask_shape).cuda() > sparsity
+    block_mask = torch.rand(mask_shape).musa() > sparsity
 
     # Run the compiled kernel (either tuned or default) with the inputs
     c = kernel(a, b, block_mask)

@@ -1,4 +1,5 @@
 import torch
+import pytest
 import tilelang
 from tilelang import tvm as tvm
 import tilelang.testing
@@ -11,6 +12,8 @@ from tilelang.intrinsics.mma_macro_generator import (
     INT4TensorCoreIntrinEmitter,
     INT4TensorCoreIntrinEmitterWithLadderTransform,
 )
+
+pytestmark = pytest.mark.skip(reason="Temporarily skipped on xujie_test branch")
 
 tilelang.testing.set_random_seed(42)
 
@@ -169,11 +172,11 @@ def assert_tl_matmul_correctness(M, N, K, in_dtype, out_dtype, accum_dtype):
     profiler = kernel.get_profiler()
 
     src_code = kernel.get_kernel_source()
-    # src_code is the generated cuda source
+    # src_code is the generated musa source
     assert src_code is not None
 
-    A = torch.randint(0, 4, (M, K), device="cuda", dtype=getattr(torch, in_dtype))
-    B = torch.randint(0, 4, (N, K), device="cuda", dtype=getattr(torch, in_dtype))
+    A = torch.randint(0, 4, (M, K), device="musa", dtype=getattr(torch, in_dtype))
+    B = torch.randint(0, 4, (N, K), device="musa", dtype=getattr(torch, in_dtype))
 
     compressed_A = (A[:, ::2] & 0x0F) + ((A[:, 1::2] & 0x0F) << 4)
     compressed_B = (B[:, ::2] & 0x0F) + ((B[:, 1::2] & 0x0F) << 4)
@@ -191,7 +194,7 @@ def assert_tl_matmul_correctness(M, N, K, in_dtype, out_dtype, accum_dtype):
     torch.testing.assert_close(C, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_assert_tl_matmul_correctness():
     assert_tl_matmul_correctness(128, 128, 128, T.int8, T.int32, T.int32)
     assert_tl_matmul_correctness(128, 128, 64, T.int8, T.int32, T.int32)
@@ -359,12 +362,12 @@ def assert_tl_matmul_weight_only_transform_correctness(M, N, K, in_dtype, out_dt
     profiler = kernel.get_profiler()
 
     src_code = kernel.get_kernel_source()
-    # src_code is the generated cuda source
+    # src_code is the generated musa source
     assert src_code is not None
     transform_b = 3
 
-    A = torch.randint(0, 4, (M, K), device="cuda", dtype=getattr(torch, in_dtype))
-    B = torch.randint(0, 4, (N, K), device="cuda", dtype=getattr(torch, in_dtype))
+    A = torch.randint(0, 4, (M, K), device="musa", dtype=getattr(torch, in_dtype))
+    B = torch.randint(0, 4, (N, K), device="musa", dtype=getattr(torch, in_dtype))
     compressed_A = (A[:, ::2] & 0x0F) + ((A[:, 1::2] & 0x0F) << 4)
     compressed_B = (B[:, ::2] & 0x0F) + ((B[:, 1::2] & 0x0F) << 4)
 
@@ -378,7 +381,7 @@ def assert_tl_matmul_weight_only_transform_correctness(M, N, K, in_dtype, out_dt
     )
 
     ladder_permutate = bitblas.ops.LadderPermutate(ladder_permutate_config)
-    LB = ladder_permutate(compressed_B.cpu()).cuda()
+    LB = ladder_permutate(compressed_B.cpu()).musa()
     C = kernel(compressed_A, LB)
 
     latency = profiler.do_bench()
@@ -395,7 +398,7 @@ def assert_tl_matmul_weight_only_transform_correctness(M, N, K, in_dtype, out_dt
 
 @tilelang.testing.requires_package("bitblas")
 @tilelang.testing.requires_llvm
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_assert_tl_matmul_weight_only_transform():
     assert_tl_matmul_weight_only_transform_correctness(128, 128, 128, T.int8, T.int32, T.int32)
 

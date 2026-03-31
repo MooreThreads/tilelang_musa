@@ -50,7 +50,7 @@ def run_cumsum(M, N, block_M, block_N, dim=0, reverse=False, dtype=T.float32, sc
         program = cumsum_fragment_test(M, N, block_M, block_N, dim, reverse, dtype)
     jit_kernel = tl.compile(program, out_idx=-1)
 
-    A = torch.randn(M, N, dtype=getattr(torch, dtype)).cuda()
+    A = torch.randn(M, N, dtype=getattr(torch, dtype)).musa()
 
     def ref_program(A):
         ref_b = torch.empty_like(A)
@@ -120,7 +120,7 @@ def run_cumsum_1d(N, block_N, reverse=False, dtype=T.float32, scope="smem"):
         raise ValueError(f"Unknown scope {scope}")
 
     jit_kernel = tl.compile(program, out_idx=-1)
-    A = torch.randn(N, dtype=getattr(torch, dtype)).cuda()
+    A = torch.randn(N, dtype=getattr(torch, dtype)).musa()
 
     def ref_program(A):
         ref_b = torch.empty_like(A)
@@ -201,7 +201,7 @@ def run_cumsum_region_1d(N, chunk_size, reverse=False, dtype=T.float32):
     """Run test for cumsum with region input."""
     program = cumsum_region_test_1d(N, chunk_size, reverse, dtype)
     jit_kernel = tl.compile(program, out_idx=-1)
-    A = torch.randn(N, dtype=getattr(torch, dtype)).cuda()
+    A = torch.randn(N, dtype=getattr(torch, dtype)).musa()
 
     def ref_program(A):
         ref_b = torch.empty_like(A)
@@ -256,7 +256,7 @@ def run_cumsum_region_2d(M, N, block_M, block_N, dim=0, reverse=False, dtype=T.f
     """Run test for cumsum with 2D region input."""
     program = cumsum_region_test_2d(M, N, block_M, block_N, dim, reverse, dtype)
     jit_kernel = tl.compile(program, out_idx=-1)
-    A = torch.randn(M, N, dtype=getattr(torch, dtype)).cuda()
+    A = torch.randn(M, N, dtype=getattr(torch, dtype)).musa()
 
     def ref_program(A):
         ref_b = torch.empty_like(A)

@@ -167,6 +167,13 @@ def mma_load_a_32x8_to_shared_16x16_layout(thread_id, local_id):
     return row, col
 
 
+def mma_load_a_32x8_to_shared_16x16_layout_mp31(thread_id, local_id):
+    # MP31 fragment-A layout expected by mutlass MP31_16x8x16_* ops.
+    row = (thread_id // 4) + 8 * (local_id // 4)
+    col = (thread_id % 4) * 2 + (local_id % 2) + 8 * ((local_id % 4) // 2)
+    return row, col
+
+
 def mma_load_b_32x16_to_shared_16x32_layout(thread_id, local_id):
     row = 8 * (local_id // 8) + (thread_id // 4)
     col = 16 * (local_id % 8 // 4) + (thread_id % 4) * 4 + (local_id % 4)
@@ -185,6 +192,13 @@ def mma_load_b_32x8_to_shared_16x16_layout(thread_id, local_id):
     """
     col = (thread_id % 4) * 2 + ((local_id % 4) % 2) + ((local_id % 4) // 2) * 8
     row = (thread_id // 4) + 8 * (local_id // 4)
+    return row, col
+
+
+def mma_load_b_32x8_to_shared_16x16_layout_mp31(thread_id, local_id):
+    # MP31 fragment-B layout expected by mutlass MP31_16x8x16_* ops.
+    row = (thread_id // 8) + 4 * ((local_id % 4) // 2) + 8 * (local_id // 4)
+    col = (thread_id % 4) * 2 + ((thread_id % 8) // 4) * 8 + (local_id % 2)
     return row, col
 
 

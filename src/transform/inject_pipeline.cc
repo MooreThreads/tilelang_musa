@@ -11,6 +11,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "../op/builtin.h"
+#include "../target/utils.h"
 #include "support/utils.h"
 #include "tir/schedule/utils.h"
 #include "tir/transforms/ir_utils.h"
@@ -505,6 +507,36 @@ private:
     return num_versions;
   }
 
+  // MTGPU 判断当前buffer空间是否需要对齐,并返回需要对齐的字节数
+  int NeedAlignGemmABBuffer(const Buffer &buffer) {
+    Target target = Target::Current();
+    if (!target.defined()) {
+      LOG(WARNING) << "NeedAlignGemmABBuffer: Target::Current() is undefined; "
+                      "skip PH1 alignment checks.";
+      return 0;
+    }
+    if (!TargetIsPH1(target) ||
+        !tvm::transform::PassContext::Current()
+             ->GetConfig<Bool>(kDisableTMALower, Bool(false))
+             .value() ||
+        (buffer->data->name_hint != "A_shared" &&
+         buffer->data->name_hint != "B_shared") ||
+        (buffer.scope() != "shared" && buffer.scope() != "shared.dyn")) {
+      return 0;
+    }
+    Array<PrimExpr> shape = buffer->shape;
+    int ndim = static_cast<int>(shape.size());
+    if (ndim != 2) {
+      return 0;
+    }
+    const auto *h = shape[0].as<IntImmNode>();
+    const auto *w = shape[1].as<IntImmNode>();
+    if (h && w && h->value * w->value < 4096) {
+      return 4096;
+    }
+    return 0;
+  }
+
   /*!
    * \brief Rewrite buffer allocation to keep multiple versions of original
    * buffer for pipelined accesses. \param buffer The buffer to be resized.
@@ -515,6 +547,13 @@ private:
     ObjectPtr<BufferNode> new_buffer =
         tvm::ffi::make_object<BufferNode>(*(buffer.get()));
     new_buffer->shape.insert(new_buffer->shape.begin(), PrimExpr(num_versions));
+    // MTGPU
+    if (int align_bytes = NeedAlignGemmABBuffer(buffer)) {
+      new_buffer->strides = {Integer(align_bytes / buffer->dtype.bytes()),
+                             Integer(buffer->shape[1].as<IntImmNode>()->value),
+                             Integer(1)};
+      return Buffer(new_buffer);
+    }
     if (!new_buffer->strides.empty()) {
       ICHECK(new_buffer->strides.size() + 1 == new_buffer->shape.size());
       PrimExpr stride_0 = new_buffer->strides[0] * new_buffer->shape[1];

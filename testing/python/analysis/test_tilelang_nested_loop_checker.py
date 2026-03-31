@@ -7,13 +7,13 @@ import pytest
 tilelang.testing.set_random_seed()
 
 
-def _require_cuda_tensor(shape, dtype=torch.float32):
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
+def _require_musa_tensor(shape, dtype=torch.float32):
+    if not torch.musa.is_available():
+        pytest.skip("MUSA not available")
     try:
-        return torch.randn(*shape, device="cuda", dtype=dtype)
+        return torch.randn(*shape, device="musa", dtype=dtype)
     except RuntimeError as err:
-        pytest.skip(f"CUDA runtime unavailable: {err}")
+        pytest.skip(f"MUSA runtime unavailable: {err}")
 
 
 """
@@ -78,7 +78,7 @@ def nested_noncontinuous_parallels(length=256, block=16, dtype=T.float32):
 def test_nested_parallels():
     kernel1 = nested_continuous_parallels(length=256, block=16)
     kernel2 = nested_triple_continuous_parallels(length=256, block1=8, block2=2)
-    data = _require_cuda_tensor((256,), torch.float32)
+    data = _require_musa_tensor((256,), torch.float32)
     result1 = kernel1(data)
     result2 = kernel2(data)
     torch.testing.assert_close(result1, data + 1.0, atol=1e-5, rtol=1e-5)
@@ -243,7 +243,7 @@ def nested_noncontinuous_serials(length=256, block=16, dtype=T.float32):
 
 def test_nested_serials():
     kernel1 = nested_continuous_serials(length=256, block=16)
-    data = _require_cuda_tensor((256,), torch.float32)
+    data = _require_musa_tensor((256,), torch.float32)
     result1 = kernel1(data)
     torch.testing.assert_close(result1, data + 1.0, atol=1e-5, rtol=1e-5)
 
@@ -332,7 +332,7 @@ def nested_continuous_sps(length=256, block1=8, block2=2, dtype=T.float32):
 def test_mixed_sp():
     kernel1 = nested_continuous_sp(length=256, block=16)
     kernel2 = nested_continuous_ps(length=256, block=16)
-    data = _require_cuda_tensor((256,), torch.float32)
+    data = _require_musa_tensor((256,), torch.float32)
     result1 = kernel1(data)
     result2 = kernel2(data)
     torch.testing.assert_close(result1, data + 1.0, atol=1e-5, rtol=1e-5)
@@ -683,7 +683,7 @@ def test_tiled_op_with_parallel():
     run_gemm_tiled_op_with_parallel()
 
     kernel1 = tir_op_with_parallel(length=256, block=16)
-    data = _require_cuda_tensor((256,), torch.float32)
+    data = _require_musa_tensor((256,), torch.float32)
     result1 = kernel1(data)
     torch.testing.assert_close(result1, torch.relu(data), atol=1e-5, rtol=1e-5)
     kernel2 = customize_op_with_parallel(length=256, block=16)

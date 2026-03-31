@@ -272,9 +272,16 @@ def torch_assert_close(
     )
     tensor_a, tensor_b = _equalize_attributes(tensor_a, tensor_b)
 
-    mismatched = ~torch.isclose(tensor_a, tensor_b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+    tensor_cmp_a = tensor_a
+    tensor_cmp_b = tensor_b
+    if tensor_a.dtype in [torch.bool, torch.uint8, torch.int8, torch.int16]:
+        # muDNN does not support several elementwise math ops on low-bit integer dtypes.
+        tensor_cmp_a = tensor_a.to(torch.int32)
+        tensor_cmp_b = tensor_b.to(torch.int32)
+
+    mismatched = ~torch.isclose(tensor_cmp_a, tensor_cmp_b, rtol=rtol, atol=atol, equal_nan=equal_nan)
     # Compute the absolute difference between the two tensors
-    diff = torch.abs(tensor_a - tensor_b)
+    diff = torch.abs(tensor_cmp_a - tensor_cmp_b)
     # Count the number of mismatched elements
     num_mismatched = mismatched.sum().item()
 
@@ -311,7 +318,7 @@ def torch_assert_close(
             f"({max_mismatched_ratio * 100:.2f}% allowed, but get {num_mismatched / total_elements * 100:.2f}%)."
             f"{mismatch_info}"
             f"\nGreatest absolute difference: {diff.max().item()}, "
-            f"Greatest relative difference: {(diff / (torch.abs(tensor_b) + 1e-12)).max().item()}"
+            f"Greatest relative difference: {(diff / (torch.abs(tensor_cmp_b) + 1e-12)).max().item()}"
             f"\n{base_name}: {tensor_a}"
             f"\n{ref_name}: {tensor_b}"
         )

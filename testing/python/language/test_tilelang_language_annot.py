@@ -22,9 +22,9 @@ def test_tensor_annot_mul():
         return kernel
 
     ker = example_tensor_annot()
-    A = torch.arange(16, dtype=torch.int32, device="cuda")
+    A = torch.arange(16, dtype=torch.int32, device="musa")
     ker(A)
-    expected = torch.zeros(16, dtype=torch.int32, device="cuda")
+    expected = torch.zeros(16, dtype=torch.int32, device="musa")
     assert torch.equal(A, expected)
 
 
@@ -46,9 +46,9 @@ def test_tensor_annot_add():
         return kernel
 
     ker = example_tensor_annot()
-    A = torch.arange(16, dtype=torch.int32, device="cuda")
+    A = torch.arange(16, dtype=torch.int32, device="musa")
     ker(A)
-    expected = torch.zeros(16, dtype=torch.int32, device="cuda")
+    expected = torch.zeros(16, dtype=torch.int32, device="musa")
     assert torch.equal(A, expected)
 
 
@@ -70,9 +70,9 @@ def test_tensor_annot_mul_add():
         return kernel
 
     ker = example_tensor_annot()
-    A = torch.arange(16, dtype=torch.int32, device="cuda")
+    A = torch.arange(16, dtype=torch.int32, device="musa")
     ker(A)
-    expected = torch.zeros(16, dtype=torch.int32, device="cuda")
+    expected = torch.zeros(16, dtype=torch.int32, device="musa")
     assert torch.equal(A, expected)
 
 

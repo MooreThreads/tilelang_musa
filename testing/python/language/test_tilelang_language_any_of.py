@@ -171,8 +171,8 @@ def run_block_sparse_matmul_global(M=1024, N=1024, K=1024, sparsity=0.5, conditi
     enable_rasteration = True
 
     # Initialize input matrices A and B on the GPU with half precision
-    a = torch.randn(M, K).cuda().half()
-    b = torch.randn(K, N).cuda().half()
+    a = torch.randn(M, K).musa().half()
+    b = torch.randn(K, N).musa().half()
 
     func = blocksparse_matmul_global(
         M,
@@ -189,7 +189,7 @@ def run_block_sparse_matmul_global(M=1024, N=1024, K=1024, sparsity=0.5, conditi
     kernel = tilelang.compile(func, out_idx=-1)
     # Create block mask with desired sparsity
     mask_shape = (M // block_M, N // block_N, K // block_K)
-    block_mask = torch.rand(mask_shape).cuda() > sparsity
+    block_mask = torch.rand(mask_shape).musa() > sparsity
     block_mask = block_mask.view(mask_shape + (1,)).repeat(1, 1, 1, condition_dim)
     # random set the last dimension to be False
     block_mask[:, :, :, 0] = False
@@ -212,8 +212,8 @@ def run_block_sparse_matmul_shared(M=1024, N=1024, K=1024, sparsity=0.5, conditi
     enable_rasteration = True
 
     # Initialize input matrices A and B on the GPU with half precision
-    a = torch.randn(M, K).cuda().half()
-    b = torch.randn(K, N).cuda().half()
+    a = torch.randn(M, K).musa().half()
+    b = torch.randn(K, N).musa().half()
 
     func = blocksparse_matmul_shared(
         M,
@@ -237,7 +237,7 @@ def run_block_sparse_matmul_shared(M=1024, N=1024, K=1024, sparsity=0.5, conditi
     )
     # Create block mask with desired sparsity
     mask_shape = (M // block_M, N // block_N, K // block_K)
-    block_mask = torch.rand(mask_shape).cuda() > sparsity
+    block_mask = torch.rand(mask_shape).musa() > sparsity
     block_mask = block_mask.view(mask_shape + (1,)).repeat(1, 1, 1, condition_dim)
     # random set the last dimension to be False
     block_mask[:, :, :, 0] = False
@@ -260,8 +260,8 @@ def run_block_sparse_matmul_local(M=1024, N=1024, K=1024, sparsity=0.5, conditio
     enable_rasteration = True
 
     # Initialize input matrices A and B on the GPU with half precision
-    a = torch.randn(M, K).cuda().half()
-    b = torch.randn(K, N).cuda().half()
+    a = torch.randn(M, K).musa().half()
+    b = torch.randn(K, N).musa().half()
 
     func = blocksparse_matmul_local(
         M,
@@ -285,7 +285,7 @@ def run_block_sparse_matmul_local(M=1024, N=1024, K=1024, sparsity=0.5, conditio
     )
     # Create block mask with desired sparsity
     mask_shape = (M // block_M, N // block_N, K // block_K)
-    block_mask = torch.rand(mask_shape).cuda() > sparsity
+    block_mask = torch.rand(mask_shape).musa() > sparsity
     block_mask = block_mask.view(mask_shape + (1,)).repeat(1, 1, 1, condition_dim)
     # random set the last dimension to be False
     block_mask[:, :, :, 0] = False

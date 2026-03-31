@@ -28,9 +28,9 @@ def test_nullable_shared_shape():
     kernel = get_kernel()
 
     # Create test tensors
-    tensor_a = torch.randn((m,), device="cuda", dtype=torch.float32).to(torch.int32)
-    tensor_b = torch.randn((m,), device="cuda", dtype=torch.float32).to(torch.int32)
-    tensor_c = torch.randn((m,), device="cuda", dtype=torch.float32).to(torch.int32)
+    tensor_a = torch.randn((m,), device="musa", dtype=torch.float32).to(torch.int32)
+    tensor_b = torch.randn((m,), device="musa", dtype=torch.float32).to(torch.int32)
+    tensor_c = torch.randn((m,), device="musa", dtype=torch.float32).to(torch.int32)
 
     print("Test 1: All tensors provided")
     kernel(tensor_a, tensor_b, tensor_c)
@@ -93,7 +93,7 @@ def test_nullable_single_source_shape():
     kernel = get_kernel()
 
     # Provide a valid tensor: should run
-    x = torch.randn((m,), device="cuda", dtype=torch.float32).to(torch.int32)
+    x = torch.randn((m,), device="musa", dtype=torch.float32).to(torch.int32)
     kernel(x)
 
     # Passing None should not segfault; m binds to 0 and kernel is a no-op
@@ -131,7 +131,7 @@ def test_nullable_shared_shape_with_no_source_buffers_but_other_tensor_present()
 
     kernel = get_kernel()
 
-    out = torch.randn((1,), device="cuda", dtype=torch.float16)
+    out = torch.randn((1,), device="musa", dtype=torch.float16)
     out_ref = out.clone()
 
     # Both `a` and `b` are None; they also share the symbolic shape var `m`.

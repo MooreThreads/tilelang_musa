@@ -10,6 +10,8 @@ from functools import lru_cache
 ROOT = Path(__file__).parent
 
 base_version = (ROOT / "VERSION").read_text().strip()
+patch_version_file = ROOT / 'VERSION_PATCH'
+patch_version = patch_version_file.read_text().strip() if patch_version_file.exists() else None
 # When installing a sdist,
 # the installed version needs to match the sdist version,
 # so pip will complain when we install `tilelang-0.1.6.post2+gitxxxx.tar.gz`.
@@ -56,6 +58,8 @@ def dynamic_metadata(field: str, settings: dict[str, object] | None = None) -> s
             # only on macosx_11_0_arm64, not necessary
             # backend = 'metal'
             pass
+        elif _read_cmake_bool(os.environ.get('USE_MUSA', '')):
+            backend = 'musa'
         elif _read_cmake_bool(os.environ.get("USE_ROCM", "")):
             backend = "rocm"
         elif "USE_CUDA" in os.environ and not _read_cmake_bool(os.environ.get("USE_CUDA")):
@@ -71,6 +75,8 @@ def dynamic_metadata(field: str, settings: dict[str, object] | None = None) -> s
                 backend = "cuda"
         if backend:
             exts.append(backend)
+            if patch_version:
+                exts.append(patch_version)
 
         # Add build date if TILELANG_BUILD_WHEEL_WITH_DATE is set
         if _read_cmake_bool(os.environ.get("TILELANG_BUILD_WHEEL_WITH_DATE")):

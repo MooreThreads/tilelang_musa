@@ -16,7 +16,7 @@ from tvm import tir
 
 def _apply_passes(mod, enable_non_predicated=False, enable_predicated=False):
     """Apply the LowerLDGSTG pass and related lowering passes."""
-    mod = tvm.tir.transform.BindTarget(tvm.target.Target("cuda"))(mod)
+    mod = tvm.tir.transform.BindTarget(tvm.target.Target("musa"))(mod)
     mod = tl.transform.FlattenBuffer()(mod)
     mod = tl.transform.VectorizeLoop()(mod)
     with tvm.transform.PassContext(
@@ -235,8 +235,8 @@ def test_predicated_disabled():
     # This just verifies the configuration works
 
 
-def test_non_cuda_target_skip():
-    """Test that the pass is skipped for non-CUDA targets."""
+def test_non_musa_target_skip():
+    """Test that the pass is skipped for non-MUSA targets."""
 
     @T.prim_func
     def func(A: T.Buffer((128,), "float32"), B: T.Buffer((128,), "float32")):
@@ -252,14 +252,14 @@ def test_non_cuda_target_skip():
     mod = tl.transform.VectorizeLoop()(mod)
     with tvm.transform.PassContext(config={PassConfigKey.TL_ENABLE_LOWER_LDGSTG: True}):
         mod = tl.transform.LowerLDGSTG()(mod)
-    print("=== test_non_cuda_target_skip ===")
+    print("=== test_non_musa_target_skip ===")
     print(mod)
-    # The load should NOT be lowered to ldg because target is not CUDA
-    assert not _check_has_intrinsic(mod, "ldg"), "Non-CUDA targets should NOT use ldg intrinsics"
-    assert not _check_has_intrinsic(mod, "stg"), "Non-CUDA targets should NOT use stg intrinsics"
+    # The load should NOT be lowered to ldg because target is not MUSA
+    assert not _check_has_intrinsic(mod, "ldg"), "Non-MUSA targets should NOT use ldg intrinsics"
+    assert not _check_has_intrinsic(mod, "stg"), "Non-MUSA targets should NOT use stg intrinsics"
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_e2e_load_global_store_global():
     """End-to-end test that ldg/stg intrinsics work correctly when enabled."""
     import torch
@@ -274,8 +274,8 @@ def test_e2e_load_global_store_global():
             for j in T.vectorized(4):
                 Y[pid * 4 + j] = X[pid * 4 + j]
 
-    X = torch.randn(128, dtype=torch.float32, device="cuda")
-    Y = torch.empty(128, dtype=torch.float32, device="cuda")
+    X = torch.randn(128, dtype=torch.float32, device="musa")
+    Y = torch.empty(128, dtype=torch.float32, device="musa")
 
     copy_kernel(X, Y)
 
@@ -289,7 +289,7 @@ def test_e2e_load_global_store_global():
     assert "load_global_128" in src or "store_global_128" in src, "Expected load_global_128/store_global_128 in generated source"
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_e2e_load_global_store_global_predicated():
     """End-to-end test that load_global/store_global intrinsics work correctly when enabled."""
     import torch
@@ -304,13 +304,13 @@ def test_e2e_load_global_store_global_predicated():
             for j in T.vectorized(4):
                 Y[pid * 4 + j] = T.if_then_else(pid < N // 8, X[pid * 4 + j], T.float32(0))
 
-    X = torch.randn(128, dtype=torch.float32, device="cuda")
-    Y = torch.empty(128, dtype=torch.float32, device="cuda")
+    X = torch.randn(128, dtype=torch.float32, device="musa")
+    Y = torch.empty(128, dtype=torch.float32, device="musa")
 
     copy_kernel(X, Y)
 
     # Verify correctness
-    Y_ref = torch.zeros(128, dtype=torch.float32, device="cuda")
+    Y_ref = torch.zeros(128, dtype=torch.float32, device="musa")
     for i in range(128):
         if i < 64:
             Y_ref[i] = X[i]

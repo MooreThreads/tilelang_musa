@@ -64,8 +64,8 @@ def test_par_compile():
     ]
     kernels = matmul_kernel_jit.par_compile(configs)
     for (M, N, K, _, _, _), kernel in zip(configs, kernels):
-        A = torch.randn(M, K, dtype=torch.float16).cuda()
-        B = torch.randn(N, K, dtype=torch.float16).cuda()
+        A = torch.randn(M, K, dtype=torch.float16).musa()
+        B = torch.randn(N, K, dtype=torch.float16).musa()
         ref = (A @ B.T).float()
         C = kernel(A, B)
         tilelang.testing.torch_assert_close(C, ref, rtol=1e-2, atol=1e-2)

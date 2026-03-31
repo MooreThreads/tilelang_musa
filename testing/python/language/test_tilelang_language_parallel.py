@@ -39,25 +39,25 @@ def parallel_elementwise_dynamic(max_len=512, threads=256, dtype=T.float32):
     return main
 
 
-def _require_cuda_tensor(shape, dtype=torch.float32):
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
+def _require_musa_tensor(shape, dtype=torch.float32):
+    if not torch.musa.is_available():
+        pytest.skip("MUSA not available")
     try:
-        return torch.randn(*shape, device="cuda", dtype=dtype)
+        return torch.randn(*shape, device="musa", dtype=dtype)
     except RuntimeError as err:
-        pytest.skip(f"CUDA runtime unavailable: {err}")
+        pytest.skip(f"MUSA runtime unavailable: {err}")
 
 
 def test_parallel_static_extent():
     kernel = parallel_elementwise_static(length=256)
-    data = _require_cuda_tensor((256,), torch.float32)
+    data = _require_musa_tensor((256,), torch.float32)
     result = kernel(data)
     torch.testing.assert_close(result, data + 1.0, atol=1e-5, rtol=1e-5)
 
 
 def test_parallel_dynamic_extent():
     kernel = parallel_elementwise_dynamic(max_len=512, threads=256)
-    data = _require_cuda_tensor((512,), torch.float32)
+    data = _require_musa_tensor((512,), torch.float32)
     for valid_len in [0, 13, 200, 600]:
         out = kernel(data, valid_len)
         reference = torch.zeros_like(data)

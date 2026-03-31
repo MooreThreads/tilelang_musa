@@ -256,7 +256,7 @@ void CodeGenCHost::PrintGetFuncFromBackend(
   this->stream << "}\n";
 }
 
-void CodeGenCHost::PrintCallPacked(const tvm::tir::CallNode *op) {
+std::string CodeGenCHost::PrintCallPacked(const tvm::tir::CallNode *op) {
   using namespace tvm::tir;
   const StringImmNode *func_name = op->args[0].as<StringImmNode>();
   ICHECK(func_name != nullptr)
@@ -331,6 +331,7 @@ void CodeGenCHost::PrintCallPacked(const tvm::tir::CallNode *op) {
     this->PrintLine("});");
     this->PrintLine("if (", metal_result, " != 0) return ", metal_result, ";");
   }
+  return result;
 }
 
 std::string CodeGenCHost::GetPackedName(const tvm::tir::CallNode *op) {
@@ -365,8 +366,10 @@ void CodeGenCHost::VisitExpr_(const tvm::tir::CallNode *op,
     size_t size = 0;
     if (type == "shape") {
       size = (num->value * sizeof(ffi::Shape::index_type) + unit - 1) / unit;
-    } else if (type == "tvm_ffi_any") {
+    } else if (type == "tvm_ffi_any" || type == "arg_value") {
       size = (num->value * sizeof(TVMFFIAny) + unit - 1) / unit;
+    } else if (type == "arg_tcode") {
+      size = (num->value * sizeof(int) + unit - 1) / unit;
     } else if (type == "array") {
       size = (num->value * sizeof(DLTensor) + unit - 1) / unit;
     } else {
@@ -376,12 +379,18 @@ void CodeGenCHost::VisitExpr_(const tvm::tir::CallNode *op,
     this->stream << "TVMFFIAny " << stack_name << "[" << size << "];\n";
     os << stack_name;
   } else if (op->op.same_as(builtin::tvm_call_packed_lowered())) {
-    this->PrintCallPacked(op);
+    std::string packed_result = this->PrintCallPacked(op);
+    os << packed_result << ".v_int64";
   } else if (op->op.same_as(builtin::tvm_call_cpacked_lowered())) {
-    this->PrintCallPacked(op);
+    std::string packed_result = this->PrintCallPacked(op);
+    os << packed_result << ".v_int64";
   } else if (op->op.same_as(builtin::tvm_throw_last_error())) {
     this->PrintIndent();
     this->stream << "return -1;\n";
+  } else if (op->op.same_as(builtin::create_barriers())) {
+    // create_barriers is a device-side builtin and should not be emitted by
+    // host codegen. Keep host codegen robust by lowering it to a no-op value.
+    os << "0";
   } else {
     tvm::codegen::CodeGenC::VisitExpr_(op, os);
   }

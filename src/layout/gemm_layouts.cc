@@ -19,6 +19,15 @@ IterVar make_itervar(std::string name, PrimExpr dom) {
   return IterVar(Range(0, dom), var, IterVarType::kDataPar);
 }
 
+Fragment makeGemmFragment4x8() {
+  IterVar i = make_itervar("i", 4);
+  IterVar j = make_itervar("j", 8);
+  IterVar rep = make_itervar("rep", 1);
+  PrimExpr forward_thread = FloorDiv(j->var, 1) + 8 * i;
+  PrimExpr index = FloorMod(j->var, 1);
+  return Fragment({i, j}, {index}, forward_thread, rep);
+}
+
 Fragment makeGemmFragment8x4() {
   IterVar i = make_itervar("i", 8);
   IterVar j = make_itervar("j", 4);
@@ -185,6 +194,55 @@ Fragment makeGemmFragmentCHopper(const int block_m, const int block_n,
   auto block_layout = warp_layout->Repeat({block_m / warp_m, block_n / warp_n},
                                           true, false); // 16*Y x N (Y warp)
   return block_layout->Repeat({warp_m / 16, 1}, false, false);
+}
+
+Fragment makePHSqmmaFragmentC(const int block_m, const int block_n,
+                              const int warp_m, const int warp_n,
+                              const int element_size,
+                              const std::array<int, 3> &inst_shape) {
+  int warp_tile_m = block_m / warp_m;
+  int warp_tile_n = block_n / warp_n;
+  int inst_m = inst_shape[0];
+  int inst_n = inst_shape[1];
+
+  auto base_layout = makeGemmFragment4x8()->Repeat({4, 1}, true, false);
+  auto inst_layout =
+      base_layout->Repeat({inst_m / 16, inst_n / 8}, false, true);
+  auto squad_layout = inst_layout->Repeat(
+      {warp_tile_m * 4 / inst_m, warp_tile_n / inst_n}, false, false);
+  auto block_layout = squad_layout->Repeat({warp_m / 4, warp_n}, true, false);
+  return block_layout;
+}
+
+Fragment makeGemmQY2FragmentC(const int block_m, const int block_n,
+                              const int warp_m, const int warp_n,
+                              const int element_size) {
+  if (element_size == 64) {
+    ICHECK(false) << "Not supported";
+  }
+  ICHECK(block_m % warp_m == 0);
+  ICHECK(block_n % warp_n == 0);
+  ICHECK(warp_m % 32 == 0) << "warp_m=" << warp_m;
+  ICHECK(warp_n % 32 == 0) << "warp_n=" << warp_n;
+  auto base_layout = makeGemmFragment4x8()->Repeat({2, 2}, true);
+  auto warp_8x32_layout = base_layout->Repeat({1, 2}, false, false);
+  auto warp_32x32_layout = warp_8x32_layout->Repeat({4, 1}, false, false);
+  auto warp_layout = warp_32x32_layout->Repeat(
+      {block_m / warp_m, block_n / warp_n}, true, false);
+  auto block_layout =
+      warp_layout->Repeat({warp_m / 32, warp_n / 32}, false, false);
+  return block_layout;
+}
+
+Fragment makeGemmFragmentCLinear(const int block_m, const int block_n,
+                                 const int block_size) {
+  IterVar i = make_itervar("i", block_m);
+  IterVar j = make_itervar("j", block_n);
+  IterVar rep = make_itervar("rep", 1);
+  PrimExpr linear = i->var * block_n + j->var;
+  PrimExpr forward_thread = FloorMod(linear, block_size);
+  PrimExpr index = FloorDiv(linear, block_size);
+  return Fragment({i, j}, {index}, forward_thread, rep);
 }
 
 Fragment makeGemmFragmentA(const int block_m, const int block_n,
@@ -435,6 +493,11 @@ static Layout MakeQuarterBankSwizzleLayout2D(int stride, int continuous,
   return Layout(Array<PrimExpr>{stride, continuous}, {tc, ts, index});
 }
 
+Layout makeQuarterBankSwizzleLayout(int stride, int continuous,
+                                    int element_size) {
+  return MakeQuarterBankSwizzleLayout2D(stride, continuous, element_size);
+}
+
 Layout makeQuarterBankSwizzleLayout(const Buffer &buffer) {
   auto info = GetSwizzleShapeInfoChecked(buffer);
   auto base = MakeQuarterBankSwizzleLayout2D(static_cast<int>(info.stride),
@@ -468,6 +531,10 @@ static Layout MakeHalfBankSwizzleLayout2D(int stride, int continuous,
   return Layout(Array<PrimExpr>{stride, continuous}, {tc, ts, index});
 }
 
+Layout makeHalfBankSwizzleLayout(int stride, int continuous, int element_size) {
+  return MakeHalfBankSwizzleLayout2D(stride, continuous, element_size);
+}
+
 Layout makeHalfBankSwizzleLayout(const Buffer &buffer) {
   auto info = GetSwizzleShapeInfoChecked(buffer);
   auto base = MakeHalfBankSwizzleLayout2D(static_cast<int>(info.stride),
@@ -499,6 +566,10 @@ static Layout MakeFullBankSwizzleLayout2D(int stride, int continuous,
   PrimExpr c_swizzle = xor8x8(c, s);
   PrimExpr index = vec + (c_swizzle + s * 8) * vector_size;
   return Layout(Array<PrimExpr>{stride, continuous}, {tc, ts, index});
+}
+
+Layout makeFullBankSwizzleLayout(int stride, int continuous, int element_size) {
+  return MakeFullBankSwizzleLayout2D(stride, continuous, element_size);
 }
 
 Layout makeFullBankSwizzleLayout(const Buffer &buffer) {
@@ -563,6 +634,13 @@ Layout makeGemmABLayoutF64_Kouter(int stride, int continuous) {
   PrimExpr swizzled_c = FloorMod(c, 4) + xor4x4(FloorDiv(c, 4), s) * 4;
   PrimExpr index = swizzled_c + s * 16;
   return Layout(Array<PrimExpr>{stride, continuous}, {tc, ts, index});
+}
+
+// The Default Layout for 2D GEMM Tensor Access
+Layout makeGemmLayoutLinear(int stride, int continuous) {
+  IterVar i = make_itervar("i", stride);
+  IterVar j = make_itervar("j", continuous);
+  return Layout(Array{i, j}, {i * continuous + j});
 }
 
 // The Default Layout for Tensor Access (row-major linear layout)
@@ -866,6 +944,112 @@ Layout makeGemmABLayoutHopper(int mat_stride, int mat_continuous,
               << ", continuous=" << mat_continuous
               << ", element_size=" << element_size << ", k_inner=" << k_inner;
   __builtin_unreachable(); // to prevent compiler warning
+}
+
+Layout makeGemmABSwizzlePH1(int stride, int continuous, int elem_bytes, int SG,
+                            int SS, int SL, int swizzle_offset) {
+  Var row = InputPlaceholder(0);
+  Var col = InputPlaceholder(1);
+  PrimExpr addr = (row * continuous + col) * elem_bytes;
+
+  PrimExpr line_id = FloorDiv(addr, SL);
+  PrimExpr line_offset = FloorMod(addr, SL);
+  PrimExpr sg_per_sl = FloorDiv(SL, SG);
+
+  PrimExpr offset_line_id = FloorDiv(swizzle_offset, SL);
+  PrimExpr cycle_line_id = FloorMod(line_id + offset_line_id, sg_per_sl);
+
+  PrimExpr sg_id = FloorDiv(line_offset, SG);
+  PrimExpr sg_offset = FloorMod(line_offset, SG);
+  PrimExpr target_sg_id = sg_id ^ cycle_line_id;
+  PrimExpr target_line_offset = target_sg_id * SG + sg_offset;
+  PrimExpr target_addr = line_id * SL + target_line_offset;
+
+  PrimExpr i = FloorDiv(target_addr, continuous * elem_bytes);
+  PrimExpr j =
+      FloorDiv(FloorMod(target_addr, continuous * elem_bytes), elem_bytes);
+  return Layout(Array<PrimExpr>{stride, continuous}, {i, j});
+}
+
+Layout makeGemmABLayoutPH1(int mat_stride, int mat_continuous, int continuity,
+                           int element_size, bool k_inner) {
+  ICHECK_LE(continuity, mat_continuous)
+      << "continuity must be <= mat_continuous, continuity=" << continuity
+      << ", mat_continuous=" << mat_continuous;
+  int SG = 0, SS = 256, SL = 256;
+  if (element_size == 8 || (element_size == 16 && k_inner) ||
+      (element_size == 32 && k_inner)) {
+    SG = 16;
+  } else if (element_size == 16 && !k_inner) {
+    SG = 32;
+  } else if (element_size == 32 && !k_inner) {
+    SG = 64;
+  } else {
+    ICHECK(0) << "Unsupported layout for PH1 with stride=" << mat_stride
+              << ", continuous=" << mat_continuous
+              << ", element_size=" << element_size << ", k_inner=" << k_inner;
+  }
+  int elem_bytes = element_size / 8;
+  int chunk_cols =
+      (continuity < mat_continuous) ? continuity : 256 / elem_bytes;
+  if (mat_continuous <= chunk_cols) {
+    return makeGemmABSwizzlePH1(mat_stride, mat_continuous, elem_bytes, SG, SS,
+                                SL, 0);
+  }
+
+  ICHECK_GT(chunk_cols, 0) << "chunk_cols must be positive";
+  ICHECK_LE(chunk_cols, 256 / elem_bytes)
+      << "chunk_cols must be <= " << (256 / elem_bytes) << ", got "
+      << chunk_cols;
+  ICHECK(mat_continuous % chunk_cols == 0)
+      << "PH1 chunked swizzle requires mat_continuous divisible by chunk_cols, "
+      << "mat_continuous=" << mat_continuous << ", chunk_cols=" << chunk_cols;
+
+  Var row = InputPlaceholder(0);
+  Var col = InputPlaceholder(1);
+  PrimExpr chunk_id = FloorDiv(col, chunk_cols);
+  PrimExpr col_in_chunk = FloorMod(col, chunk_cols);
+
+  int swizzle_bytes = mat_stride * chunk_cols * elem_bytes;
+  int swizzle_cycle_bytes = (SL / SG) * SL;
+  if (swizzle_bytes >= swizzle_cycle_bytes) {
+    auto chunk_swizzle =
+        makeGemmABSwizzlePH1(mat_stride, chunk_cols, elem_bytes, SG, SS, SL, 0);
+    Array<PrimExpr> chunk_out = chunk_swizzle->Forward({row, col_in_chunk});
+    PrimExpr chunk_linear = chunk_out[0] * chunk_cols + chunk_out[1];
+    PrimExpr global_linear =
+        chunk_id * (mat_stride * chunk_cols) + chunk_linear;
+    PrimExpr i = FloorDiv(global_linear, mat_continuous);
+    PrimExpr j = FloorMod(global_linear, mat_continuous);
+    return Layout(Array<PrimExpr>{mat_stride, mat_continuous}, {i, j});
+  }
+
+  ICHECK(swizzle_bytes * 2 == swizzle_cycle_bytes);
+
+  PrimExpr cycle_id = FloorMod(chunk_id, 2);
+  PrimExpr global_cycle_linear;
+  for (int index = 0; index < 2; ++index) {
+    int swizzle_offset = index * swizzle_bytes;
+    auto chunk_swizzle = makeGemmABSwizzlePH1(
+        mat_stride, chunk_cols, elem_bytes, SG, SS, SL, swizzle_offset);
+    Array<PrimExpr> chunk_out = chunk_swizzle->Forward({row, col_in_chunk});
+    PrimExpr chunk_linear = chunk_out[0] * chunk_cols + chunk_out[1];
+    PrimExpr global_block_linear =
+        index * (mat_stride * chunk_cols) + chunk_linear;
+    PrimExpr pred = (cycle_id == index);
+    if (index == 0) {
+      global_cycle_linear = global_block_linear;
+    } else {
+      global_cycle_linear =
+          Select(pred, global_block_linear, global_cycle_linear);
+    }
+  }
+  PrimExpr global_linear =
+      FloorDiv(chunk_id, 2) * (2 * mat_stride * chunk_cols) +
+      global_cycle_linear;
+  PrimExpr i = FloorDiv(global_linear, mat_continuous);
+  PrimExpr j = FloorMod(global_linear, mat_continuous);
+  return Layout(Array<PrimExpr>{mat_stride, mat_continuous}, {i, j});
 }
 
 Layout makeGemmABLayoutSm100(int mat_stride, int mat_continuous, int continuity,

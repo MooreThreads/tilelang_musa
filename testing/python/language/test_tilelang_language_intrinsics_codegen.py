@@ -3,7 +3,7 @@ import tilelang.language as T
 import tilelang.testing
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_language_ldg_codegen():
     N = 128
 
@@ -16,13 +16,13 @@ def test_language_ldg_codegen():
             # Explicitly request read-only cache load for x[pid]
             y[pid] = T.__ldg(x[pid]) + 1.0
 
-    # Compile for CUDA and retrieve generated CUDA source
-    kernel = tilelang.compile(main, out_idx=[1], target="cuda")
+    # Compile for MUSA and retrieve generated MUSA source
+    kernel = tilelang.compile(main, out_idx=[1], target="musa")
     src = kernel.get_kernel_source()
     print(src)
-    # Assert that codegen uses __ldg on CUDA backend
+    # Assert that codegen uses __ldg on MUSA backend
     # We look for the intrinsic call with address-of argument
-    assert "__ldg(" in src, "Expected __ldg call in generated CUDA source"
+    assert "__ldg(" in src, "Expected __ldg call in generated MUSA source"
     assert "__ldg(&" in src or "__ldg(&(" in src, "Expected address-of form in __ldg call"
 
 

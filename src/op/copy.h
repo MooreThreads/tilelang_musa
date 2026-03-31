@@ -161,6 +161,22 @@ public:
     return 0; // default: evict_normal
   }
 
+  bool GetForceAsyncCopy() const {
+    if (auto val = annotations.Get("force_async_copy")) {
+      if (auto int_val = val->as<IntImmNode>()) {
+        return int_val->value != 0;
+      }
+    }
+    return false;
+  }
+
+  PrimExpr GetSourceRobustDesc() const {
+    if (auto val = annotations.Get("src_robust_desc")) {
+      return Downcast<PrimExpr>(val.value());
+    }
+    return PrimExpr();
+  }
+
   bool GetIsAsyncCopy() const {
     if (auto val = annotations.Get("is_async_copy")) {
       if (auto int_val = val->as<IntImmNode>()) {

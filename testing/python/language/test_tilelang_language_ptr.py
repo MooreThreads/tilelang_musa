@@ -47,10 +47,10 @@ def run_matmul(M, N, K, block_M, block_N, block_K, dtype=T.float16, accum_dtype=
     def ref_program(a, b):
         return (a @ b.T).to(torch.float32)
 
-    a = torch.randn(M, K, device="cuda", dtype=map_torch_type(dtype))
-    b = torch.randn(N, K, device="cuda", dtype=map_torch_type(dtype))
-    ffi_c = torch.zeros(M, N, device="cuda", dtype=map_torch_type(accum_dtype))
-    cython_c = torch.zeros(M, N, device="cuda", dtype=map_torch_type(accum_dtype))
+    a = torch.randn(M, K, device="musa", dtype=map_torch_type(dtype))
+    b = torch.randn(N, K, device="musa", dtype=map_torch_type(dtype))
+    ffi_c = torch.zeros(M, N, device="musa", dtype=map_torch_type(accum_dtype))
+    cython_c = torch.zeros(M, N, device="musa", dtype=map_torch_type(accum_dtype))
 
     ffi_jit_kernel(a, b, ffi_c, M, N, K)
     cython_jit_kernel(a.data_ptr(), b.data_ptr(), cython_c.data_ptr(), M, N, K)

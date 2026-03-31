@@ -34,6 +34,7 @@
 #include "tvm/tir/var.h"
 #include <iostream>
 #include <tvm/arith/iter_affine_map.h>
+#include <tvm/ir/transform.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
 #include <vector>
@@ -644,6 +645,14 @@ private:
   PrimExpr VisitExpr_(const CastNode *node) final {
     int cast_vector_size = arith::ZeroAwareGCD(
         vector_load_bits_max_ / node->dtype.bits(), initial_vector_size_);
+    Target target = Target::Current(false);
+    // On MUSA, mixed-precision vectorized casts (e.g. float32 <-> fp8/fp4)
+    // are lowered via x2/x4 chunk helpers in codegen. Cap planning width to x8
+    // so we don't emit unsupported vector dtypes (e.g. float32x16).
+    if (TargetIsMusa(target) &&
+        IsCudaVectorizableCast(node->value.dtype(), node->dtype)) {
+      cast_vector_size = arith::ZeroAwareGCD(cast_vector_size, 8);
+    }
     // Record cast constraint (use empty buffer to indicate cast)
     buffer_vector_infos_.push_back({Buffer(), cast_vector_size, false, {}});
     return arith::IRMutatorWithAnalyzer::VisitExpr_(node);
@@ -694,10 +703,15 @@ private:
     // 3. If element offset is independent with loop_var, ignore it.
     bool is_independent =
         CanProveIndependent(elem_offset, inner_for_->loop_var, analyzer_);
-    // For BufferStore, if indices is invariant or independent with loop_var,
-    // we should not vectorize it (broadcasting store is not supported).
+    // For memory BufferStore, if indices are invariant/independent with
+    // loop_var, do not vectorize (broadcasting store is not supported). Keep
+    // local/fragment stores vectorizable to preserve register-level cast fusion
+    // (e.g. parallel vectorized cast kernels).
     if (is_store && (is_invariant || is_independent)) {
-      return 1;
+      if (!IsLocalBuffer(buffer) &&
+          !IsFragmentBuffer(buffer)) {
+        return 1;
+      }
     }
     if (is_independent) {
       return buffer_vec_size; // only limited constraint from this buffer
@@ -757,7 +771,8 @@ private:
 
 class VectorizeRewriter : public StmtExprMutator {
 public:
-  VectorizeRewriter(int vector_size) : vector_size_(vector_size) {}
+  VectorizeRewriter(int vector_size, bool enable_auto_unroll)
+      : vector_size_(vector_size), enable_auto_unroll_(enable_auto_unroll) {}
 
 private:
   Stmt VisitStmt_(const ForNode *node) final {
@@ -790,6 +805,9 @@ private:
         if (outer_kind == ForKind::kParallel) {
           outer_kind = ForKind::kSerial;
         }
+        if (enable_auto_unroll_ && outer_kind == ForKind::kSerial) {
+          outer_kind = ForKind::kUnrolled;
+        }
         body = For(outer_var, 0, extent / vector_size_, outer_kind, body,
                    fnode->thread_binding, fnode->annotations, fnode->step,
                    fnode->span);
@@ -808,6 +826,7 @@ private:
 
   const ForNode *inner_for_{};
   const int vector_size_;
+  const bool enable_auto_unroll_;
 };
 
 int GetVectorizeSize(const For &loop, const LayoutMap &layout_map) {
@@ -959,7 +978,11 @@ For VectorizeLoop(const For &loop, const LayoutMap &layout_map,
   }
   if (vectorize_hint == 1)
     return ParallelToSerial(loop);
-  auto rewriter = VectorizeRewriter(vectorize_hint);
+  tvm::transform::PassContext ctxt = tvm::transform::PassContext::Current();
+  Optional<Bool> opt_disable_auto_unroll =
+      ctxt->GetConfig(kDisableAutoUnroll, Optional<Bool>());
+  bool disable_auto_unroll = opt_disable_auto_unroll.value_or(Bool(false));
+  auto rewriter = VectorizeRewriter(vectorize_hint, !disable_auto_unroll);
   return Downcast<For>(rewriter(loop));
 }
 
@@ -971,7 +994,11 @@ For VectorizeLoop(const For &loop, arith::Analyzer *analyzer,
   }
   if (vectorize_hint == 1)
     return ParallelToSerial(loop);
-  auto rewriter = VectorizeRewriter(vectorize_hint);
+  tvm::transform::PassContext ctxt = tvm::transform::PassContext::Current();
+  Optional<Bool> opt_disable_auto_unroll =
+      ctxt->GetConfig(kDisableAutoUnroll, Optional<Bool>());
+  bool disable_auto_unroll = opt_disable_auto_unroll.value_or(Bool(false));
+  auto rewriter = VectorizeRewriter(vectorize_hint, !disable_auto_unroll);
   return Downcast<For>(rewriter(loop));
 }
 

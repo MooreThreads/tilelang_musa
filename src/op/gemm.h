@@ -7,6 +7,9 @@
 #ifndef TVM_TL_OP_GEMM_H_
 #define TVM_TL_OP_GEMM_H_
 
+#include <array>
+#include <optional>
+
 #include "operator.h"
 
 namespace tvm {
@@ -39,7 +42,7 @@ inline const char *GemmWarpPolicyTypeToString(GemmWarpPolicyType type) {
 }
 
 // Target GEMM instruction
-enum class GemmInst : uint8_t { kMMA, kWGMMA, kTCGEN5MMA, kMFMA };
+enum class GemmInst : uint8_t { kMMA, kWGMMA, kTCGEN5MMA, kMFMA, kFMA, kSQMMA };
 
 /// Convert GemmInst enum to string for debugging
 inline const char *GemmInstToString(GemmInst inst) {
@@ -52,6 +55,10 @@ inline const char *GemmInstToString(GemmInst inst) {
     return "TCGEN5MMA";
   case GemmInst::kMFMA:
     return "MFMA";
+  case GemmInst::kFMA:
+    return "FMA";
+  case GemmInst::kSQMMA:
+    return "SQMMA";
   default:
     return "Unknown";
   }
@@ -118,6 +125,9 @@ public:
 class GemmNode : public TileOperatorNode {
 public:
   bool checkWgmma() const;
+  bool AllowSQMMA(int block_size, Target target) const;
+  std::optional<std::array<int, 3>>
+  SelectSQMMAInstShape(int block_size, Target target) const;
   tir::Buffer a_, b_, c_;
   // BufferRegion for A, B and C
   BufferRegion aRegion_, bRegion_, cRegion_;

@@ -26,6 +26,7 @@
 #include "arith/ir_mutator_with_analyzer.h"
 #include "runtime/thread_storage_scope.h"
 #include "tir/transforms/ir_utils.h"
+#include <algorithm>
 #include <string>
 #include <tvm/arith/analyzer.h>
 #include <tvm/arith/int_set.h>
@@ -204,6 +205,52 @@ private:
     }
     return scope->value == sync_scope_.to_string();
   }
+};
+
+// Quickly determine whether there is any multi-thread threadIdx extent.
+// If all threadIdx extents are compile-time 1, shared-memory ThreadSync
+// cannot introduce useful synchronization and can be skipped entirely.
+class ThreadSyncRequirementChecker : public StmtVisitor {
+public:
+  bool NeedSync(const Stmt &stmt) {
+    need_sync_ = false;
+    VisitStmt(stmt);
+    return need_sync_;
+  }
+
+private:
+  void VisitStmt(const Stmt &stmt) final {
+    if (need_sync_) {
+      return;
+    }
+    StmtVisitor::VisitStmt(stmt);
+  }
+
+  void VisitStmt_(const AttrStmtNode *op) final {
+    if (need_sync_) {
+      return;
+    }
+    if (op->attr_key == tvm::tir::attr::thread_extent) {
+      if (const auto *iv = op->node.as<IterVarNode>()) {
+        const std::string thread_tag = iv->thread_tag;
+        if (thread_tag.rfind("threadIdx.", 0) == 0) {
+          if (const auto *extent = op->value.as<IntImmNode>()) {
+            if (extent->value > 1) {
+              need_sync_ = true;
+              return;
+            }
+          } else {
+            // Non-constant extent: conservatively keep ThreadSync enabled.
+            need_sync_ = true;
+            return;
+          }
+        }
+      }
+    }
+    StmtVisitor::VisitStmt_(op);
+  }
+
+  bool need_sync_{false};
 };
 
 class ThreadSyncInserter : public StmtExprMutator {
@@ -1117,14 +1164,27 @@ struct TileLangThreadSyncPlanner : public ConstrVisitor {
               buffer_data_to_buffer_.at(tvm::ffi::GetRef<Var>(buffer_var));
           auto buffer_shape = buffer->shape;
           // convert 1d offset to multi-dimensional index
-          auto linear_to_indices = [this](PrimExpr offset,
-                                          const Array<PrimExpr> &shape) {
+          auto linear_to_indices = [](PrimExpr offset,
+                                      const Array<PrimExpr> &shape) {
             Array<PrimExpr> indices;
-            PrimExpr remaining = std::move(offset);
+            DataType index_dtype = offset.dtype();
+            if (!index_dtype.is_int() || index_dtype.bits() < 64) {
+              index_dtype = DataType::Int(64);
+            }
+            auto cast_index_dtype = [index_dtype](PrimExpr expr) -> PrimExpr {
+              if (expr.dtype() == index_dtype) {
+                return expr;
+              }
+              if (expr.dtype().is_int()) {
+                return cast(index_dtype, expr);
+              }
+              return expr;
+            };
+            PrimExpr remaining = cast_index_dtype(std::move(offset));
             for (size_t i = 0; i < shape.size(); ++i) {
-              PrimExpr stride = make_const(DataType::Int(32), 1);
+              PrimExpr stride = make_const(index_dtype, 1);
               for (size_t j = i + 1; j < shape.size(); ++j) {
-                stride = stride * shape[j];
+                stride = stride * cast_index_dtype(shape[j]);
               }
               PrimExpr idx = FloorDiv(remaining, stride);
               remaining = FloorMod(remaining, stride);
@@ -1412,6 +1472,20 @@ private:
     if (lhs.touched.size() != 1 || rhs.touched.size() != 1) {
       return false;
     }
+    auto ToInt64Scalar = [&](PrimExpr expr) -> PrimExpr {
+      DataType dtype = expr.dtype();
+      if (dtype.lanes() != 1) {
+        return PrimExpr();
+      }
+      if (!dtype.is_int() && !dtype.is_uint()) {
+        return PrimExpr();
+      }
+      if (dtype != DataType::Int(64)) {
+        return cast(DataType::Int(64), expr);
+      }
+      return expr;
+    };
+
     ConstrSet prev_cset{lhs.cset};
     ConstrSet curr_cset{rhs.cset};
     arith::Analyzer analyzer;
@@ -1424,14 +1498,27 @@ private:
         {"ty1", "ty2"},
         {"tz1", "tz2"},
     };
-    PrimExpr lhs_min = analyzer.Simplify(lhs.touched[0].min());
-    PrimExpr lhs_max = analyzer.Simplify(lhs.touched[0].max());
-    PrimExpr rhs_min = analyzer.Simplify(rhs.touched[0].min());
-    PrimExpr rhs_max = analyzer.Simplify(rhs.touched[0].max());
-    for (unsigned idx = 0; idx != 3; ++idx) {
-      auto &info = thread_vars[idx];
-      Var old_prev_var = lhs.threads[lhs.threads.size() + idx - 3]->var;
-      Var old_curr_var = rhs.threads[rhs.threads.size() + idx - 3]->var;
+    PrimExpr lhs_min = ToInt64Scalar(analyzer.Simplify(lhs.touched[0].min()));
+    PrimExpr lhs_max = ToInt64Scalar(analyzer.Simplify(lhs.touched[0].max()));
+    PrimExpr rhs_min = ToInt64Scalar(analyzer.Simplify(rhs.touched[0].min()));
+    PrimExpr rhs_max = ToInt64Scalar(analyzer.Simplify(rhs.touched[0].max()));
+    if (!lhs_min.defined() || !lhs_max.defined() || !rhs_min.defined() ||
+        !rhs_max.defined()) {
+      return false;
+    }
+
+    // Not all kernels use 3-D thread bindings. Only substitute shared thread
+    // axes that exist on both sides to avoid invalid thread var access.
+    size_t shared_thread_axes =
+        std::min(static_cast<size_t>(3),
+                 std::min(lhs.threads.size(), rhs.threads.size()));
+    size_t lhs_base = lhs.threads.size() - shared_thread_axes;
+    size_t rhs_base = rhs.threads.size() - shared_thread_axes;
+    size_t name_base = 3 - shared_thread_axes;
+    for (size_t idx = 0; idx < shared_thread_axes; ++idx) {
+      auto &info = thread_vars[name_base + idx];
+      Var old_prev_var = lhs.threads[lhs_base + idx]->var;
+      Var old_curr_var = rhs.threads[rhs_base + idx]->var;
       Var prev_var(info.name_prev, old_prev_var.dtype());
       Var curr_var(info.name_curr, old_curr_var.dtype());
       lhs_min = Substitute(lhs_min, {{old_prev_var, prev_var}});
@@ -1441,6 +1528,15 @@ private:
       rhs_max = Substitute(rhs_max, {{old_curr_var, curr_var}});
       curr_cset = curr_cset.Substitute({{old_curr_var, curr_var}});
     }
+    lhs_min = ToInt64Scalar(analyzer.Simplify(lhs_min));
+    lhs_max = ToInt64Scalar(analyzer.Simplify(lhs_max));
+    rhs_min = ToInt64Scalar(analyzer.Simplify(rhs_min));
+    rhs_max = ToInt64Scalar(analyzer.Simplify(rhs_max));
+    if (!lhs_min.defined() || !lhs_max.defined() || !rhs_min.defined() ||
+        !rhs_max.defined()) {
+      return false;
+    }
+
     prev_cset.Populate(analyzer);
     curr_cset.Populate(analyzer);
 
@@ -1716,8 +1812,18 @@ private:
 
       const char *thread_names[] = {"tx", "ty", "tz"};
       for (unsigned idx = 0; idx != 3; ++idx) {
-        Var old_prev_var = prev.threads[prev.threads.size() + idx - 3]->var;
-        Var old_curr_var = curr.threads[curr.threads.size() + idx - 3]->var;
+        int prev_thread_pos = static_cast<int>(prev.threads.size()) +
+                              static_cast<int>(idx) - 3;
+        int curr_thread_pos = static_cast<int>(curr.threads.size()) +
+                              static_cast<int>(idx) - 3;
+        if (prev_thread_pos < 0 || curr_thread_pos < 0) {
+          // Accesses without full xyz thread axes can appear in some transformed
+          // TIR. Missing axes are effectively invariant, so skip cross-thread
+          // substitution for that axis.
+          continue;
+        }
+        Var old_prev_var = prev.threads[prev_thread_pos]->var;
+        Var old_curr_var = curr.threads[curr_thread_pos]->var;
 
         if (same_access_type) {
           // For WAW/RAR: use a single shared Var object for both prev and curr
@@ -1833,6 +1939,12 @@ PrimFunc TileLangThreadSync(PrimFunc func, const std::string &storage_scope) {
   StorageScope sync_scope = StorageScope::Create(storage_scope);
   auto *n = func.CopyOnWrite();
   auto stmt = n->body;
+  if (sync_scope.rank == StorageRank::kShared) {
+    ThreadSyncRequirementChecker checker;
+    if (!checker.NeedSync(stmt)) {
+      return func;
+    }
+  }
   if (sync_scope.rank == StorageRank::kShared && sync_scope.tag.empty()) {
     stmt = ThreadSyncAfterWaitGroupInserter(sync_scope)(stmt);
   }

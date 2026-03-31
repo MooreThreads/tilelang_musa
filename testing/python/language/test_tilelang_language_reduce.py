@@ -198,7 +198,7 @@ def run_reduce_sum_clear(M, N, dtype=T.float32, tl_func=reduce_sum_test_clear):
 
     import torch
 
-    dummy_A = torch.randn((M, N), dtype=getattr(torch, dtype)).cuda()
+    dummy_A = torch.randn((M, N), dtype=getattr(torch, dtype)).musa()
     ref_out = ref_program(dummy_A)
     tl_out = jit_kernel(dummy_A)
     torch.testing.assert_close(tl_out, ref_out, atol=1e-2, rtol=1e-2)
@@ -239,7 +239,7 @@ def run_reduce_max_clear(M, N, dtype=T.float16):
 
     import torch
 
-    dummy_A = torch.randn((M, N), dtype=getattr(torch, dtype)).cuda()
+    dummy_A = torch.randn((M, N), dtype=getattr(torch, dtype)).musa()
     ref_out = ref_program(dummy_A)
     tl_out = jit_kernel(dummy_A)
     torch.testing.assert_close(tl_out, ref_out, atol=1e-2, rtol=1e-2)

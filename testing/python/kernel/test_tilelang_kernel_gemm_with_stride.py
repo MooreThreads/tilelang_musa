@@ -50,19 +50,19 @@ def run_gemm_with_stride_ss(M: int, N: int, K: int, block_M: int, block_N: int, 
     # 2. Compile the kernel into a torch function
     # out_idx specifies the index of the output buffer in the argument list
     # if out_idx is specified, the tensor will be created during runtime
-    # target currently can be "cuda" or "hip" or "cpu".
+    # target currently can be "musa" or "hip" or "cpu".
     jit_kernel = tilelang.compile(
         func,
         out_idx=[2],
-        target="cuda",
+        target="musa",
         pass_configs={
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
     )
     # Create random input tensors on the GPU
-    a = torch.randn(M, K, device="cuda", dtype=torch.float16)
-    b = torch.randn(K, N, device="cuda", dtype=torch.float16)
+    a = torch.randn(M, K, device="musa", dtype=torch.float16)
+    b = torch.randn(K, N, device="musa", dtype=torch.float16)
 
     # Run the kernel through the Profiler
     c = jit_kernel(a, b)
@@ -76,8 +76,7 @@ def run_gemm_with_stride_ss(M: int, N: int, K: int, block_M: int, block_N: int, 
     print("Kernel output matches PyTorch reference.")
 
 
-@tilelang.testing.requires_cuda
-@tilelang.testing.requires_cuda_compute_version_ge(7, 5)
+@tilelang.testing.requires_musa
 def test_tilelang_kernel_gemm_with_stride():
     run_gemm_with_stride_ss(128, 128, 64, 32, 32, 32)
 

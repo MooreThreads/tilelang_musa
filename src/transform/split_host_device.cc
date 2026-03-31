@@ -55,8 +55,24 @@ namespace tir = tvm::tir;
 class HostDeviceSplitter : public tir::StmtMutator {
 public:
   explicit HostDeviceSplitter(IRModule *device_mod,
-                              std::function<GlobalVar()> var_supply)
-      : device_mod_(device_mod), var_supply_(std::move(var_supply)) {}
+                              std::function<GlobalVar()> var_supply,
+                              const tir::PrimFunc &func)
+      : device_mod_(device_mod), var_supply_(std::move(var_supply)) {
+    // LowerPH/LowerHopper annotate descriptor init args on pre-split PrimFunc.
+    // Preserve them for device codegen after host/device splitting.
+    if (auto attr =
+            func->GetAttr<Map<tir::Var, Array<PrimExpr>>>("tma_descriptor_args")) {
+      for (const auto &kv : attr.value()) {
+        tma_descriptor_args_.Set(kv.first->name_hint, kv.second);
+      }
+    } else if (auto attr =
+                   func->GetAttr<Map<String, Array<PrimExpr>>>(
+                       "tma_descriptor_args")) {
+      for (const auto &kv : attr.value()) {
+        tma_descriptor_args_.Set(kv.first, kv.second);
+      }
+    }
+  }
 
   void SetNonRestrictParams(Optional<Array<tir::Var>> params) {
     for (auto param : params.value()) {
@@ -246,6 +262,9 @@ private:
     if (cluster_dims_.defined()) {
       device_attrs.Set("cluster_dims", cluster_dims_.value());
     }
+    if (!tma_descriptor_args_.empty()) {
+      device_attrs.Set("tma_descriptor_args", tma_descriptor_args_);
+    }
     device_func = WithAttrs(std::move(device_func), device_attrs);
 
     GlobalVar kernel_symbol_global = var_supply_();
@@ -276,11 +295,13 @@ private:
   std::function<GlobalVar()> var_supply_;
   // Collect assumes in host side
   Array<const tir::AttrStmtNode *> host_assumes_;
+  // TMA descriptor initialization arguments keyed by descriptor var name.
+  Map<String, Array<PrimExpr>> tma_descriptor_args_;
 };
 
 tir::PrimFunc SplitHostDevice(tir::PrimFunc func, IRModule *device_mod,
                               std::function<GlobalVar()> var_supply) {
-  HostDeviceSplitter splitter(device_mod, std::move(var_supply));
+  HostDeviceSplitter splitter(device_mod, std::move(var_supply), func);
   // Propagate non-restrict parameter list from host func to device kernels
   if (auto opt = func->GetAttr<Array<tir::Var>>(tl::attr::kNonRestrictParams)) {
     splitter.SetNonRestrictParams(opt.value());

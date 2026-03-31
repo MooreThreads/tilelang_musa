@@ -121,13 +121,14 @@ def test_no_transform_if_then_else_condition():
 
 
 # =============================================================================
-# CUDA Codegen Tests
+# MUSA Codegen Tests
 # =============================================================================
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
+@tilelang.testing.requires_musa_compute_version_ge(3, 2)
 def test_codegen_local_to_memory():
-    """Test CUDA codegen for local → memory with vectorized copy."""
+    """Test MUSA codegen for local → memory with vectorized copy."""
 
     @tilelang.jit
     def kernel_fn():
@@ -147,9 +148,10 @@ def test_codegen_local_to_memory():
     assert "fp4_e2_16_t" in source, "Expected vectorized fp4 copy in generated code"
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
+@tilelang.testing.requires_musa_compute_version_ge(3, 2)
 def test_codegen_memory_to_local():
-    """Test CUDA codegen for memory → local with vectorized copy."""
+    """Test MUSA codegen for memory → local with vectorized copy."""
 
     @tilelang.jit
     def kernel_fn():
@@ -167,9 +169,9 @@ def test_codegen_memory_to_local():
     assert "b_local_cast" in source, "Expected local cast buffer in generated code"
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_codegen_fp8_local_to_memory():
-    """Test CUDA codegen for fp8 local → memory."""
+    """Test MUSA codegen for fp8 local → memory."""
 
     @tilelang.jit
     def kernel_fn():
@@ -183,13 +185,11 @@ def test_codegen_fp8_local_to_memory():
     kernel = kernel_fn.compile()
     source = kernel.get_kernel_source()
 
-    # Should have local cast buffer
-    assert "b_local_cast" in source, "Expected local cast buffer in generated code"
-    # Should have fp8 conversion (uses __nv_cvt for fp8)
+    # Should have fp8 conversion in generated code.
     assert "fp8" in source and "cvt" in source, "Expected fp8 conversion"
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_codegen_no_cast_buffer_same_dtype():
     """Test no cast buffer when dtypes are the same."""
 

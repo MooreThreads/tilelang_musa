@@ -24,15 +24,15 @@ def _tmp_var_kernel(N, block_N, dtype=T.float32):
 def run_tmp_var_test(N=1024, block_N=128):
     kernel = _tmp_var_kernel(N, block_N)
 
-    a = torch.randn(N, device="cuda", dtype=torch.float)
-    b = torch.empty(N, device="cuda", dtype=torch.float)
+    a = torch.randn(N, device="musa", dtype=torch.float)
+    b = torch.empty(N, device="musa", dtype=torch.float)
 
     a_ref = a.clone()
 
     kernel(a, b)
 
     # Reference computation
-    tmp_ref = torch.maximum(a_ref, torch.tensor(1.0, dtype=torch.float, device="cuda"))
+    tmp_ref = torch.maximum(a_ref, torch.tensor(1.0, dtype=torch.float, device="musa"))
     b_ref = tmp_ref / 2
     a_ref = tmp_ref * 2
 

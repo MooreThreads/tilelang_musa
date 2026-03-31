@@ -1,10 +1,12 @@
 """Annotation helpers exposed on the TileLang language surface."""
 
+import threading
 from typing import Callable
 
+from tilelang import tvm
 from tilelang.layout import Fragment, Layout
 from tilelang.utils.language import is_fragment
-from tvm.script.parser.tir import attr, block_attr
+from tvm.script.parser.tir import attr, block_attr, evaluate
 from tvm.tir import FloatImm
 
 __all__ = [
@@ -15,6 +17,16 @@ __all__ = [
     "annotate_restrict_buffers",
 ]
 
+_tls = threading.local()
+
+
+def _next_layout_override_step() -> int:
+    if not hasattr(_tls, "layout_override_step"):
+        _tls.layout_override_step = 0
+    step = _tls.layout_override_step
+    _tls.layout_override_step += 1
+    return step
+
 
 def use_swizzle(panel_size: int, order: str = "row", enable: bool = True):
     """Annotate a kernel to use a specific threadblock swizzle pattern."""
@@ -24,20 +36,50 @@ def use_swizzle(panel_size: int, order: str = "row", enable: bool = True):
     return attr(None, "threadblock_swizzle_pattern", f"tl::{device_func}<{panel_size}>")
 
 
-def annotate_layout(layout_map: dict):
-    """Annotate the layout of the buffer."""
+def annotate_layout(layout_map: dict, allow_reannotation: bool = False, allow_buffer_region: bool = False):
+    """Annotate the layout of the buffer.
+
+    Parameters
+    ----------
+    layout_map : dict
+        Buffer-to-layout map.
+    allow_reannotation : bool
+        If False (default), keep original block-level semantics.
+        If True, record an ordered manual-layout declaration that can update
+        a buffer layout in later statements.
+    allow_buffer_region : bool
+        If False (default), reject BufferRegion keys.
+        If True, allow BufferRegion keys and map them to their underlying buffer.
+    """
     _layout_map = {}
     for buffer, layout in layout_map.items():
-        if is_fragment(buffer):
-            assert isinstance(layout, Fragment), f"for Fragment {buffer}, layout must be a Fragment, but got {type(layout)}"
+        if isinstance(buffer, tvm.tir.Buffer):
+            if is_fragment(buffer):
+                assert isinstance(layout, Fragment), f"for Fragment {buffer}, layout must be a Fragment, but got {type(layout)}"
+            buffer_data = buffer.data
+            target_shape = buffer.shape
+        elif isinstance(buffer, tvm.tir.BufferRegion):
+            if not allow_buffer_region:
+                raise ValueError("BufferRegion is not allowed in annotate_layout unless allow_buffer_region=True")
+            buffer_data = buffer.buffer.data
+            target_shape = buffer.buffer.shape
+        else:
+            raise ValueError(f"Invalid annotate_layout key type: {type(buffer)}")
         if isinstance(layout, Layout):
-            _layout_map[buffer.data] = layout
+            _layout_map[buffer_data] = layout
         elif isinstance(layout, Callable):
-            _layout_map[buffer.data] = Layout(buffer.shape, layout)
+            _layout_map[buffer_data] = Layout(target_shape, layout)
         else:
             raise ValueError(f"Invalid layout: {layout}")
 
-    return block_attr({"layout_map": _layout_map})
+    if not allow_reannotation:
+        return block_attr({"layout_map": _layout_map})
+
+    step = _next_layout_override_step()
+    block_attr({"layout_override_seq": {str(step): _layout_map}})
+    marker_op = tvm.ir.Op.get("tl.layout_marker")
+    evaluate(tvm.tir.Call("int32", marker_op, [tvm.tir.IntImm("int32", step)]))
+    return None
 
 
 def annotate_safe_value(safe_value_map: dict):

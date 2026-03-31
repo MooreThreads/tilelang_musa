@@ -22,7 +22,7 @@ def fill_symbolic(value: float, dtype=T.bfloat16):
 def run_fill_symbolic(n: int):
     import torch
 
-    x = torch.zeros(n, dtype=torch.bfloat16, device="cuda")
+    x = torch.zeros(n, dtype=torch.bfloat16, device="musa")
     fill_symbolic(1.0)(x)
     assert x.min() == 1.0 and x.max() == 1.0
 
@@ -51,7 +51,7 @@ def fill_static(n: int, value: float, dtype=T.bfloat16):
 def run_fill_static(n: int):
     import torch
 
-    x = torch.zeros(n, dtype=torch.bfloat16, device="cuda")
+    x = torch.zeros(n, dtype=torch.bfloat16, device="musa")
     fill_static(n, 1.0)(x)
     assert x.min() == 1.0 and x.max() == 1.0
 

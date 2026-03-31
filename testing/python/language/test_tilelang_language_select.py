@@ -29,8 +29,8 @@ def get_select_kernel_1():
 
 
 def test_select_correctness():
-    A = torch.randn((128, 8), dtype=torch.float32, device="cuda")
-    B = torch.empty((128, 8), dtype=torch.float32, device="cuda")
+    A = torch.randn((128, 8), dtype=torch.float32, device="musa")
+    B = torch.empty((128, 8), dtype=torch.float32, device="musa")
     kernel = get_select_kernel_1()
 
     A = torch.clamp(A, min=1e-4)

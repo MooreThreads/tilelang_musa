@@ -17,9 +17,9 @@ def _simple_add_kernel():
 
 
 def test_codegen_emits_const_for_readonly_params():
-    # Lower without device compilation to retrieve CUDA source reliably
+    # Lower without device compilation to retrieve MUSA source reliably
     func = _simple_add_kernel()
-    artifact = lower(func, target="cuda", enable_device_compile=False)
+    artifact = lower(func, target="musa", enable_device_compile=False)
 
     src = artifact.kernel_source
     print(src)

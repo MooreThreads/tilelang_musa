@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from tilelang._typing import BufferLikeType, BufferLikeTypeTuple, BarrierType, DType
 from tilelang import tvm as tvm
 from tilelang.language import ptx_arrive_barrier, evaluate
@@ -29,23 +31,28 @@ def _normalize_index_arg(value: int | PrimExpr | None) -> PrimExpr | None:
     raise TypeError(f"Expect warp sizing argument to be int or PrimExpr, but got {type(value)}.")
 
 
-def _mbar_to_buffer_load(mbar: BarrierType) -> BufferLoad:
-    """Convert a memory barrier to a buffer load.
+def _mbar_to_buffer_load(mbar: BarrierType | Call) -> BufferLoad | Call:
+    """Normalize a memory barrier argument for intrinsic emission.
 
     Args:
         mbar: BarrierType
             The memory barrier to convert
 
     Returns:
-        tir.BufferLoad: A buffer load of the memory barrier
+        Union[tir.BufferLoad, tir.Call]: A lowered barrier handle argument.
     """
     if isinstance(mbar, tir.BufferLoad):
         return mbar
     elif isinstance(mbar, tir.Buffer):
         assert len(mbar.shape) == 1, f"mbarrier must be a single element buffer, but got {mbar.shape}"
         return tir.BufferLoad(mbar, [0])
+    elif isinstance(mbar, tir.Call):
+        # Legacy tests and hand-written IR may still use `T.get_mbarrier(i)`.
+        if mbar.op.same_as(tir.op.Op.get("tl.get_mbarrier")):
+            return mbar
+        raise TypeError(f"Unsupported barrier call op: {mbar.op}")
     else:
-        raise TypeError(f"mbarrier must be an tir.BufferLoad or a tir.Buffer, but got {type(mbar)}")
+        raise TypeError(f"mbarrier must be a tir.BufferLoad, tir.Buffer, or T.get_mbarrier(...) call, but got {type(mbar)}")
 
 
 def __ldg(load_or_buf: BufferLoad | tir.Buffer, index: PrimExpr | int | None = None) -> PrimExpr:
@@ -264,8 +271,34 @@ def create_tma_descriptor(*args):
     return tir.call_intrin("handle", tir.op.Op.get("tl.create_tma_descriptor"), *args)
 
 
-# NOTE(wt): T.create_list_of_mbarrier and T.get_mbarrier is now only an intermediate intrinsic
-# during transforms, and won't be exposed to frontend. For creating mbarriers, please use T.alloc_barrier instead.
+def make_robust_desc(*args):
+    """Create a robust source descriptor for MUSA copy lowering.
+
+    Args:
+        *args: Either `(addr, size_bytes)` for a concrete robust descriptor, or
+            `()` for an internal empty-descriptor marker.
+
+    Returns:
+        tir.Call: A handle to the created robust descriptor.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.make_robust_desc"), *args)
+
+
+def create_list_of_mbarrier(*args: Any) -> Call:
+    """Compatibility wrapper for legacy mbarrier list creation.
+
+    New frontend code should prefer `T.alloc_barrier(...)`.
+    """
+    if len(args) == 1 and isinstance(args[0], list):
+        return tir.call_intrin("handle", tir.op.Op.get("tl.create_list_of_mbarrier"), *args[0])
+    if len(args) >= 1:
+        return tir.call_intrin("handle", tir.op.Op.get("tl.create_list_of_mbarrier"), *args)
+    raise TypeError("create_list_of_mbarrier expects a list or one or more arguments.")
+
+
+def get_mbarrier(*args):
+    """Compatibility wrapper for retrieving compiler-managed mbarriers."""
+    return tir.call_intrin("handle", tir.op.Op.get("tl.get_mbarrier"), *args)
 
 
 def tma_load(*args):
@@ -429,6 +462,8 @@ def mbarrier_arrive(mbarrier: BarrierType, cta_id: int | Var | None = None):
     """
     mbarrier = _mbar_to_buffer_load(mbarrier)
     if cta_id is not None:
+        if not isinstance(mbarrier, tir.BufferLoad):
+            raise TypeError("Cluster barrier arrival expects a barrier buffer load.")
         assert mbarrier.buffer.scope() == "shared.cluster_barrier", f"mbarrier must be a cluster barrier, but got {mbarrier.buffer.scope}"
         return ptx_arrive_cluster_barrier(mbarrier, cta_id)
     else:
@@ -783,7 +818,7 @@ def warpgroup_fence_operand(
     )
 
 
-def wait_wgmma(id: int):
+def wait_wgmma(id: int = 0):
     """Wait for WGMMA (Warp Group Matrix Multiply-Accumulate) operations to complete.
 
     Args:

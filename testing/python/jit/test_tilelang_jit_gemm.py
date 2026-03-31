@@ -84,8 +84,8 @@ def run_gemm_kernel_jit(
         num_threads,
     )
 
-    A = torch.randn(M, K, dtype=torch.__getattribute__(in_dtype)).cuda()
-    B = torch.randn(K, N, dtype=torch.__getattribute__(in_dtype)).cuda()
+    A = torch.randn(M, K, dtype=torch.__getattribute__(in_dtype)).musa()
+    B = torch.randn(K, N, dtype=torch.__getattribute__(in_dtype)).musa()
 
     if trans_A:
         A = A.T

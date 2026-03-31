@@ -8,3 +8,6 @@ from .cuda_driver import (
     get_num_sms,  # noqa: F401
     get_registers_per_block,  # noqa: F401
 )
+from .musa_driver import (
+    get_musa_device_properties,  # noqa: F401
+)

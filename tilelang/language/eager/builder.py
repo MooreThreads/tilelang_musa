@@ -306,6 +306,9 @@ class Builder(BaseBuilder):
             pass
         elif isinstance(val, tvm.tir.stmt.BufferStore):
             tir.buffer_store(val.buffer, val.value, val.indices, val.predicate)
+        elif isinstance(val, tvm.tir.stmt.AttrStmt):
+            with self.with_frame(tir.attr(val.node, val.attr_key, val.value)):
+                self.eval(val.body)
         elif isinstance(val, (Buffer, Var)):
             pass
         else:
@@ -687,8 +690,12 @@ class Builder(BaseBuilder):
             raise ValueError(
                 f"To pass as reference, argument `{name}` is expected to be a variable or a buffer region, but got {value}({type(value)})"
             )
-        elif isinstance(value, (PrimExpr, int, float)):
+        elif isinstance(value, (PrimExpr, bool)):
             return self.bind(name, value)
+        elif isinstance(value, int):
+            return self.bind(name, tvm.tir.const(value, "int32"))
+        elif isinstance(value, float):
+            return self.bind(name, tvm.tir.const(value, "float32"))
         else:
             return value
 
@@ -1180,8 +1187,16 @@ def substitute_primfunc(prim_func, vmap):
     )
 
 
-def prim_func(func: Callable[_P, _T] = None, *, eager_jit: bool = False) -> PrimFunc[_P, _T] | JITFunc[_P, _T]:
-    def impl(func: Callable[_P, _T]) -> PrimFunc[_P, _T] | Callable[_P, PrimFunc[_P, _T]]:
+def prim_func(
+    func: Callable[_P, _T] = None,
+    *,
+    eager_jit: bool = False,
+    generator: bool = False,
+) -> PrimFunc[_P, _T] | JITFunc[_P, _T] | Callable[_P, PrimFunc[_P, _T]]:
+    def impl(func: Callable[_P, _T]) -> PrimFunc[_P, _T] | JITFunc[_P, _T] | Callable[_P, PrimFunc[_P, _T]]:
+        if eager_jit and generator:
+            raise ValueError("`prim_func` does not support eager_jit=True with generator=True")
+
         sig = inspect.signature(func)
         ir_gen = mutate(func)
         func_annot = get_type_hints(func)
@@ -1200,6 +1215,25 @@ def prim_func(func: Callable[_P, _T] = None, *, eager_jit: bool = False) -> Prim
             if not isinstance(annot[k], type) and callable(annot[k]) and get_origin(annot[k]) is None:
                 annot[k] = annot[k]()
 
+        def build_prim_func(call_kwargs):
+            builder = Builder()
+            with builder.prim_func(func.__name__):
+                ir_gen.gen(builder)(**call_kwargs)
+            built = builder.get()
+            built.orig_func = func
+            if builder.out_idx:
+                built.out_idx_override = builder.out_idx
+            return built
+
+        def prim_func_generator(*args, **kwargs):
+            bound = sig.bind_partial(*args, **kwargs)
+            bound.apply_defaults()
+            return build_prim_func(bound.arguments)
+
+        prim_func_generator.ir_gen = ir_gen
+        prim_func_generator.source = ir_gen.source
+        prim_func_generator.orig_func = func
+
         if eager_jit:
             arg_names = list(sig.parameters.keys())
             tensor_args = {k: v for k, v in annot.items() if isinstance(v, (Buffer, Var))}
@@ -1207,18 +1241,14 @@ def prim_func(func: Callable[_P, _T] = None, *, eager_jit: bool = False) -> Prim
                 k: sig.parameters[k].default for k in tensor_args if sig.parameters[k].default is not sig.parameters[k].empty
             }
             return JITFunc(func, arg_names, tensor_args, tensor_args_defaults, ir_gen)
-        else:
-            try:
-                builder = Builder()
-                with builder.prim_func(func.__name__):
-                    ir_gen.gen(builder)(**annot)
-                prim_func = builder.get()
-                prim_func.orig_func = func
-                if builder.out_idx:
-                    prim_func.out_idx_override = builder.out_idx
-                return prim_func
-            except Exception as e:
-                logger.fatal(f"Failed to build prim_func from {func.__name__}\nargs={annot}\nsource={ir_gen.source}")
-                raise e
+
+        if generator:
+            return prim_func_generator
+
+        try:
+            return build_prim_func(annot)
+        except Exception as e:
+            logger.fatal(f"Failed to build prim_func from {func.__name__}\nargs={annot}\nsource={ir_gen.source}")
+            raise e
 
     return impl(func) if func is not None else impl

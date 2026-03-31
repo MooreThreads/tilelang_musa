@@ -11,6 +11,7 @@ from .utils import (
     match_declare_kernel,
     match_declare_kernel_cpu,
     is_cuda_target,
+    is_musa_target,
     is_hip_target,
     is_cpu_target,
     get_annotated_mod,
@@ -18,6 +19,7 @@ from .utils import (
     parse_function_call_args,
     parse_tma_descriptor_args,
 )
+from .musa_wrapper import TLMUSASourceWrapper
 import re
 import logging
 import textwrap
@@ -962,6 +964,8 @@ class TLWrapper(BaseWrapper):
         assert self.scheduled_ir_module is not None, "Please assign optimized module first."
         if is_cuda_target(self.target):
             wrapper_class = TLCUDASourceWrapper
+        elif is_musa_target(self.target):
+            wrapper_class = TLMUSASourceWrapper
         elif is_hip_target(self.target):
             wrapper_class = TLHIPSourceWrapper
         elif is_cpu_target(self.target):

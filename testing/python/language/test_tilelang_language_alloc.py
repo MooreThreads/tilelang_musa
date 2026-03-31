@@ -116,7 +116,7 @@ def run_alloc_var_with_initializer(
 
 
 # TODO(Gong): ROCm is not supported yet, disable for now
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_alloc_var_with_initializer():
     run_alloc_var_with_initializer(256, 64, T.int32, 5)
 
@@ -157,7 +157,7 @@ def run_alloc_multi_vars_with_initializer(
 
 
 # TODO(Gong): ROCm is not supported yet, disable for now
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_alloc_multi_vars_with_initializer():
     run_alloc_multi_vars_with_initializer(256, 64, T.int32)
 

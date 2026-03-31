@@ -136,8 +136,8 @@ def run_gemm_jit_kernel(
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
 
-    A = torch.randn(M, K, dtype=in_dtype).cuda()
-    B = torch.randn(K, N, dtype=in_dtype).cuda()
+    A = torch.randn(M, K, dtype=in_dtype).musa()
+    B = torch.randn(K, N, dtype=in_dtype).musa()
 
     if trans_A:
         A = A.T
@@ -235,19 +235,19 @@ def run_cython_kernel_multi_stream(
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
 
-    tensor_a = torch.randn(M, K, dtype=in_dtype).cuda()
-    tensor_b = torch.randn(K, N, dtype=in_dtype).cuda()
+    tensor_a = torch.randn(M, K, dtype=in_dtype).musa()
+    tensor_b = torch.randn(K, N, dtype=in_dtype).musa()
 
     if trans_A:
         tensor_a = tensor_a.T
     if trans_B:
         tensor_b = tensor_b.T
-    tensor_c = torch.randn(M, N, dtype=out_dtype).cuda()
+    tensor_c = torch.randn(M, N, dtype=out_dtype).musa()
 
     num_streams = 4
     for _ in range(num_streams):
-        stream = torch.cuda.Stream()
-        with torch.cuda.stream(stream):
+        stream = torch.musa.Stream()
+        with torch.musa.stream(stream):
             matmul_kernel(tensor_a, tensor_b, tensor_c)
 
 
@@ -285,14 +285,14 @@ def run_cython_dynamic_shape(
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
 
-    tensor_a = torch.randn(M, K, dtype=in_dtype).cuda()
-    tensor_b = torch.randn(K, N, dtype=in_dtype).cuda()
+    tensor_a = torch.randn(M, K, dtype=in_dtype).musa()
+    tensor_b = torch.randn(K, N, dtype=in_dtype).musa()
 
     if trans_A:
         tensor_a = tensor_a.T
     if trans_B:
         tensor_b = tensor_b.T
-    tensor_c = torch.randn(M, N, dtype=out_dtype).cuda()
+    tensor_c = torch.randn(M, N, dtype=out_dtype).musa()
 
     matmul_kernel(tensor_a, tensor_b, tensor_c)
 
@@ -338,8 +338,8 @@ def run_cython_dynamic_shape_with_out_idx(
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
 
-    tensor_a = torch.randn(M, K, dtype=in_dtype).cuda()
-    tensor_b = torch.randn(K, N, dtype=in_dtype).cuda()
+    tensor_a = torch.randn(M, K, dtype=in_dtype).musa()
+    tensor_b = torch.randn(K, N, dtype=in_dtype).musa()
 
     if trans_A:
         tensor_a = tensor_a.T
@@ -415,8 +415,8 @@ def run_matmul_int_variable(M, N, K, block_M, block_N, block_K, trans_A, trans_B
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
 
-    tensor_a = torch.randn(M, K, dtype=in_dtype).cuda()
-    tensor_b = torch.randn(K, N, dtype=in_dtype).cuda()
+    tensor_a = torch.randn(M, K, dtype=in_dtype).musa()
+    tensor_b = torch.randn(K, N, dtype=in_dtype).musa()
 
     tensor_c = matmul_kernel(tensor_a, tensor_b, 1)
 
@@ -486,8 +486,8 @@ def run_matmul_float_variable(M, N, K, block_M, block_N, block_K, trans_A, trans
     in_dtype = map_torch_type(in_dtype)
     out_dtype = map_torch_type(out_dtype)
 
-    tensor_a = torch.randn(M, K, dtype=in_dtype).cuda()
-    tensor_b = torch.randn(K, N, dtype=in_dtype).cuda()
+    tensor_a = torch.randn(M, K, dtype=in_dtype).musa()
+    tensor_b = torch.randn(K, N, dtype=in_dtype).musa()
 
     tensor_c = matmul_kernel(tensor_a, tensor_b, 1.0)
 

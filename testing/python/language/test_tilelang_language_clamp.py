@@ -99,7 +99,7 @@ def run_clamp_value_range(
         output = torch.clamp(A, min_val, max_val)
         return output
 
-    A = torch.randint(-5, 5, (1, N)).cuda().to(dtype=torch_dtype)
+    A = torch.randint(-5, 5, (1, N)).musa().to(dtype=torch_dtype)
     B = kernel(A)
     ref_b = ref_program(A)
     torch.testing.assert_close(B, ref_b)

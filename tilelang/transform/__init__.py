@@ -138,6 +138,28 @@ def LowerHopperIntrin():
     return _ffi_api.LowerHopperIntrin() if hasattr(_ffi_api, "LowerHopperIntrin") else lambda f: f  # type: ignore
 
 
+def LowerPHIntrin():
+    """LowerPHIntrin
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LowerPHIntrin() if hasattr(_ffi_api, "LowerPHIntrin") else lambda f: f  # type: ignore
+
+
+def LowerReduceBarrier():
+    """LowerReduceBarrier
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LowerReduceBarrier() if hasattr(_ffi_api, "LowerReduceBarrier") else lambda f: f  # type: ignore
+
+
 def WarpSpecializedPipeline():
     """WarpSpecializedPipeline
 
@@ -190,6 +212,16 @@ def ThreadPartialSync(storage_scope: str):
         The result pass
     """
     return _ffi_api.ThreadPartialSync(storage_scope)  # type: ignore
+
+
+def RewriteMUSAPartialSync():
+    """Rewrite partial sync to MUSA barrier synchronization."""
+    return _ffi_api.RewriteMUSAPartialSync() if hasattr(_ffi_api, "RewriteMUSAPartialSync") else lambda f: f  # type: ignore
+
+
+def OffsetMbarrierId():
+    """Offset mbarrier ids in MUSA lowering path."""
+    return _ffi_api.OffsetMbarrierId() if hasattr(_ffi_api, "OffsetMbarrierId") else lambda f: f  # type: ignore
 
 
 def IfStmtBinding():
@@ -374,6 +406,17 @@ def VectorizeLoop(enable_vectorize: bool = True):
         The result pass
     """
     return _ffi_api.VectorizeLoop(enable_vectorize)  # type: ignore
+
+
+def LateVectorizePlanner():
+    """LateVectorizePlanner
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LateVectorizePlanner() if hasattr(_ffi_api, "LateVectorizePlanner") else lambda f: f  # type: ignore
 
 
 def LowerPTXAsyncCopy():

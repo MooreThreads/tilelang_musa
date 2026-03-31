@@ -24,10 +24,10 @@ def kernel_with_warp_sync():
     return main
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_warp_sync():
-    a = torch.empty((1), device="cuda", dtype=torch.int32)
-    b = torch.empty((1), device="cuda", dtype=torch.int32)
+    a = torch.empty((1), device="musa", dtype=torch.int32)
+    b = torch.empty((1), device="musa", dtype=torch.int32)
     kernel = kernel_with_warp_sync()
     assert "__syncwarp" in kernel.get_kernel_source()
     kernel(a, b)
@@ -49,9 +49,9 @@ def kernel_with_shfl_sync():
     return main
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_shfl_sync():
-    a = torch.empty((32), device="cuda", dtype=torch.int32)
+    a = torch.empty((32), device="musa", dtype=torch.int32)
     kernel = kernel_with_shfl_sync()
     assert "__shfl_sync" in kernel.get_kernel_source()
     kernel(a)

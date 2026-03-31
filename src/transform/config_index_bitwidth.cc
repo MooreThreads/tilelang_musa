@@ -58,6 +58,21 @@ protected:
     return std::move(node);
   }
 
+  Stmt VisitStmt_(const LetStmtNode *op) final {
+    // Keep LetStmt var/value dtypes consistent after mixed index-bitwidth
+    // rewrites. Some branches keep let values in int32 while vars are remapped
+    // to int64 via IndexDataTypeRewriter var-remap logic.
+    LetStmt let_stmt = Downcast<LetStmt>(DataTypeLegalizer::VisitStmt_(op));
+    Var var = Downcast<Var>(VisitExpr(let_stmt->var));
+    PrimExpr value = this->VisitExpr(let_stmt->value);
+    if (value.dtype() != var.dtype()) {
+      if (value.dtype().is_int() && var.dtype().is_int()) {
+        value = cast(var.dtype(), value);
+      }
+    }
+    return LetStmt(var, value, let_stmt->body, let_stmt->span);
+  }
+
   PrimExpr VisitExpr_(const BufferLoadNode *op) final {
     // Force indices to be int64
     bool is_enabled = is_enabled_;

@@ -30,8 +30,8 @@ def run_gemm_jit_kernel(M, N, K, block_M, block_N, block_K):
 
     matmul_kernel = tilelang.compile(program, out_idx=-1, execution_backend="tvm_ffi")
 
-    A = torch.randn(M, K, dtype=torch.float16).cuda()
-    B = torch.randn(K, N, dtype=torch.float16).cuda()
+    A = torch.randn(M, K, dtype=torch.float16).musa()
+    B = torch.randn(K, N, dtype=torch.float16).musa()
 
     C = matmul_kernel(A, B)
 

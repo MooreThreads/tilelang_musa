@@ -28,8 +28,8 @@ def elementwise_add(M, N, block_M, block_N, in_dtype, out_dtype, threads):
 
 
 def run_elementwise_add(M, N):
-    a = torch.randn(M, N, dtype=torch.float32, device="cuda")
-    b = torch.randn(M, N, dtype=torch.float32, device="cuda")
+    a = torch.randn(M, N, dtype=torch.float32, device="musa")
+    b = torch.randn(M, N, dtype=torch.float32, device="musa")
 
     # Default config
     block_M, block_N = 128, 128

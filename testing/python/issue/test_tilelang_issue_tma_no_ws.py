@@ -11,7 +11,7 @@ def _compile_tvm_ffi(func, pass_configs):
     try:
         return tilelang.compile(
             func,
-            target="cuda",
+            target="musa",
             execution_backend="tvm_ffi",
             pass_configs=pass_configs,
         )
@@ -19,13 +19,13 @@ def _compile_tvm_ffi(func, pass_configs):
         tilelang.enable_cache()
 
 
-@tilelang.testing.requires_cuda_compute_version(9, 0)
 def test_tma_lower_no_warp_specialized_injects_mbarrier():
-    """Regression for Hopper TMA lowering when warp specialization is disabled.
+    """Regression for TMA lowering when warp specialization is disabled.
 
     When `tl.disable_tma_lower=False` but `tl.disable_warp_specialized=True`, the
     optimization pipeline must still run the TMA barrier allocation/injection
-    passes so generated CUDA source defines and uses `mbarrier[...]` correctly.
+    passes so generated MUSA source initializes and uses async named barrier
+    correctly.
     """
 
     M, K = 16, 128
@@ -58,15 +58,15 @@ def test_tma_lower_no_warp_specialized_injects_mbarrier():
 
     src = kernel.get_kernel_source()
     assert "tl::tma_load" in src
-    assert "mbarrier_mem" in src
-    assert "expect_transaction" in src
+    assert "__musa_async_bar_record(1)" in src
+    assert "__musa_async_init_arrival(1" in src
+    assert "__musa_async_add_trans(1" in src
 
-    x = torch.randn((M, K), device="cuda", dtype=torch.float16)
+    x = torch.randn((M, K), device="musa", dtype=torch.float16)
     kernel(x)
-    torch.cuda.synchronize()
+    torch.musa.synchronize()
 
 
-@tilelang.testing.requires_cuda_compute_version(9, 0)
 def test_tma_lower_no_warp_specialized_2d_descriptor_uses_args1_barrier():
     """Cover the 2D-descriptor TMA barrier rewrite path (barrier at args[1])."""
 
@@ -99,18 +99,18 @@ def test_tma_lower_no_warp_specialized_2d_descriptor_uses_args1_barrier():
     kernel = _compile_tvm_ffi(tma_copy_2d_desc, pass_configs)
 
     src = kernel.get_kernel_source()
-    assert "CUtensorMap" in src
+    assert "MUtensorDescriptor" in src
     assert "tl::tma_load" in src
 
     flat_src = " ".join(src.split())
-    pattern = r"tl::tma_load\([^,]+,\s*mbarrier\[[0-9]+\]"
+    pattern = r"tl::tma_load(?:<[^>]+>)?\([^,]+,\s*1\s*,"
     assert re.search(pattern, flat_src), (
-        f"Expected regex {pattern!r} to match flattened CUDA source. Generated source (truncated):\n{src[:1000]}"
+        f"Expected regex {pattern!r} to match flattened MUSA source. Generated source (truncated):\n{src[:1000]}"
     )
 
-    x = torch.randn((M, K), device="cuda", dtype=torch.float16)
+    x = torch.randn((M, K), device="musa", dtype=torch.float16)
     kernel(x)
-    torch.cuda.synchronize()
+    torch.musa.synchronize()
 
 
 if __name__ == "__main__":

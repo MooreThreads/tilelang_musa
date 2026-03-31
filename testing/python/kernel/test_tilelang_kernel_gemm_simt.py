@@ -136,15 +136,15 @@ def assert_tl_matmul_correctness(M, N, K, in_dtype, out_dtype, accum_dtype):
 
     src_code = kernel.get_kernel_source()
     print(src_code)
-    # src_code is the generated cuda source
+    # src_code is the generated musa source
     assert src_code is not None
 
     if in_dtype == T.int8:
-        A = torch.randint(-128, 127, (M, K), device="cuda", dtype=torch.int8)
-        B = torch.randint(-128, 127, (N, K), device="cuda", dtype=torch.int8)
+        A = torch.randint(-128, 127, (M, K), device="musa", dtype=torch.int8)
+        B = torch.randint(-128, 127, (N, K), device="musa", dtype=torch.int8)
     else:
-        A = torch.rand(M, K, device="cuda", dtype=getattr(torch, in_dtype))
-        B = torch.rand(N, K, device="cuda", dtype=getattr(torch, in_dtype))
+        A = torch.rand(M, K, device="musa", dtype=getattr(torch, in_dtype))
+        B = torch.rand(N, K, device="musa", dtype=getattr(torch, in_dtype))
 
     C = kernel(A, B)
 
@@ -165,7 +165,7 @@ def test_assert_tl_matmul():
     assert_tl_matmul_correctness(128, 256, 256, T.float16, T.float32, T.float32)
 
 
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_assert_tl_matmul_int8():
     assert_tl_matmul_correctness(128, 256, 256, T.int8, T.int32, T.int32)
 

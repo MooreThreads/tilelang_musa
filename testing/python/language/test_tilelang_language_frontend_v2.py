@@ -270,7 +270,7 @@ def test_serial_for_with_step():
         return A
 
     res = stepped_serial()
-    ref = torch.tensor([1, 2, 1, 2, 1, 2, 1, 2, 1, 2], dtype=torch.int32, device="cuda")
+    ref = torch.tensor([1, 2, 1, 2, 1, 2, 1, 2, 1, 2], dtype=torch.int32, device="musa")
     assert torch.all(res == ref), f"Expected {ref}, but got {res}"
 
     @tilelang.jit
@@ -283,7 +283,7 @@ def test_serial_for_with_step():
         return A
 
     res = stepped_serial_neg()
-    ref = torch.tensor([10, 9, 8, 7, 6, 5, 4, 3, 2, 1], dtype=torch.int32, device="cuda")
+    ref = torch.tensor([10, 9, 8, 7, 6, 5, 4, 3, 2, 1], dtype=torch.int32, device="musa")
     assert torch.all(res == ref), f"Expected {ref}, but got {res}"
 
     assert isinstance(T.serial(1, 10, 1), IRBuilderFrame)
@@ -308,20 +308,20 @@ def test_swap_logic():
         with T.Kernel(1, threads=1) as _:
             A[0], A[1] = A[1], A[0]
 
-    data = torch.tensor([1.0, 2.0], dtype=torch.float32).cuda()
+    data = torch.tensor([1.0, 2.0], dtype=torch.float32).musa()
     swap_var(data)
-    ref = torch.tensor([2.0, 1.0], dtype=torch.float32).cuda()
+    ref = torch.tensor([2.0, 1.0], dtype=torch.float32).musa()
 
     torch.testing.assert_close(data, ref)
 
-    data = torch.tensor([1.0, 2.0], dtype=torch.float32).cuda()
+    data = torch.tensor([1.0, 2.0], dtype=torch.float32).musa()
     swap_idx(data)
-    ref = torch.tensor([2.0, 1.0], dtype=torch.float32).cuda()
+    ref = torch.tensor([2.0, 1.0], dtype=torch.float32).musa()
     torch.testing.assert_close(data, ref)
 
 
 # TODO(Gong): ROCm is not supported alloc_var with initializer
-@tilelang.testing.requires_cuda
+@tilelang.testing.requires_musa
 def test_while_loop():
     @tilelang.jit
     def while_loop():
@@ -468,9 +468,9 @@ def test_constexpr_if():
             else:
                 A[0] = v + 1
 
-    A = torch.tensor([10, 20], dtype=torch.int32).cuda()
-    expect_1 = torch.tensor([10, 11], dtype=torch.int32).cuda()
-    expect_2 = torch.tensor([12, 11], dtype=torch.int32).cuda()
+    A = torch.tensor([10, 20], dtype=torch.int32).musa()
+    expect_1 = torch.tensor([10, 11], dtype=torch.int32).musa()
+    expect_2 = torch.tensor([12, 11], dtype=torch.int32).musa()
     probe(A, True)
     assert torch.equal(A, expect_1)
     probe(A, False)
